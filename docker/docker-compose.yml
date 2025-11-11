@@ -1,0 +1,16 @@
+services:
+  COBRA:
+    build:
+      context: .
+    volumes:
+      - /project_data_2/cbct/COBRA/code/preprocessing:/code
+      - /project_data_2/cbct/COBRA/data:/data
+    command: tail -F anything
+    shm_size: '20g'
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: 'all'
+            capabilities: [gpu]

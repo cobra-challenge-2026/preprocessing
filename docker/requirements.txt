@@ -1,0 +1,9 @@
+numpy
+matplotlib
+scipy
+SimpleITK
+convexAdam
+TotalSegmentator
+ipykernel
+pydantic
+itk-rtk-cuda124
