@@ -16,20 +16,6 @@ import xdrt.xdr_reader as xdr_reader
 
 logger = logging.getLogger(__name__)
 
-# def read_xim(file_path: str) -> sitk.Image:
-#     """
-#     Read a XIM file
-#     """
-#     image_io = rtk.XimImageIO.New()
-#     reader = itk.ImageFileReader.New(
-#         FileName=file_path,
-#         ImageIO=image_io
-#         )
-#     reader.Update()
-#     itk_image = reader.GetOutput()
-#     sitk_image = itk_to_sitk(itk_image)
-#     return sitk_image
-
 def read_projections_elekta(projections_path: str, lineint: bool =True) -> sitk.Image:
     """
     Read a projection set from the specified directory
@@ -85,8 +71,8 @@ def read_projections_varian(projections_path: str, lineint: bool = True, header:
 
 def read_image(image_path: str) -> sitk.Image:
     """
-    Read an image from the specified image path using SimpleITK. Checks if the path 
-    is a directory (DICOM series), .SCAN file or sitk file (e.g. NIfTI or other formats).
+    Read an image from the specified path. Checks if the path is a directory 
+    (DICOM series), .SCAN file or sitk file (e.g. .mha, NIfTI or other formats).
     """
     if os.path.isdir(image_path):
         image = read_dicom_image(image_path)
@@ -153,28 +139,14 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
     logger.info(f'Image saved to {image_path}')
 
 def itk_to_sitk(itk_image):
-    # 1. Convert ITK image to a NumPy array
     array = itk.array_from_image(itk_image)
     
-    # 2. Create SimpleITK image from the NumPy array
     sitk_image = sitk.GetImageFromArray(array)
-    
-    # --- METADATA COPY ---
-    
-    # A. Spacing (Copy directly)
     sitk_image.SetSpacing(list(itk_image.GetSpacing()))
-    
-    # B. Origin (CALCULATE based on StartIndex)
-    # Get the index of the first pixel in the buffer (e.g., [4, 4, 0])
     start_index = itk_image.GetBufferedRegion().GetIndex()
-    
-    # Calculate the physical position of that specific pixel
-    # This accounts for the shift of 3.2mm you noticed
     new_origin = itk_image.TransformIndexToPhysicalPoint(start_index)
     
     sitk_image.SetOrigin(list(new_origin))
-    
-    # C. Direction (Flatten the matrix)
     itk_direction = itk_image.GetDirection()
     itk_dims = itk_image.GetImageDimension()
     flat_direction = []
@@ -187,7 +159,6 @@ def itk_to_sitk(itk_image):
     return sitk_image
 
 def sitk_to_itk(sitk_image):
-    # Convert pixel buffer
     arr = sitk.GetArrayFromImage(sitk_image)
     itk_image = itk.image_view_from_array(arr)
 
@@ -199,17 +170,12 @@ def sitk_to_itk(sitk_image):
     sitk_direction = sitk_image.GetDirection()
     direction_np = np.array(sitk_direction, dtype=float).reshape((dimension, dimension))
 
-    # ITK Python understands NumPy arrays for direction
     itk_image.SetDirection(direction_np)
 
     return itk_image
 
 def sitk_to_nib(sitk_image:Optional[sitk.Image]):
-    """
-    Convert a SimpleITK image to a NIfTI image using nibabel.
-    """
     def make_affine(simpleITKImage):
-        # get affine transform in LPS
         c = [simpleITKImage.TransformContinuousIndexToPhysicalPoint(p)
             for p in ((1, 0, 0),
                     (0, 1, 0),
@@ -233,15 +199,6 @@ def sitk_to_nib(sitk_image:Optional[sitk.Image]):
     return img_nib
 
 def nib_to_sitk(nib_image) -> sitk.Image:
-    """
-    Convert a NIfTI image to a SimpleITK image.
-
-    Args:
-        nib_image: The NIfTI image to be converted.
-
-    Returns:
-        The converted SimpleITK image.
-    """
     img_nib_np = nib_image.get_fdata()
     nib_header = nib_image.header
     img_nib_np = np.swapaxes(img_nib_np, 0, 2)
