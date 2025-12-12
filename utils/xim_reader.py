@@ -292,7 +292,7 @@ def can_read_xim(path: str) -> bool:
 # -------------------------------------------------------------------------
 
 
-def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
+def read_xim_image(path: str) -> Tuple[sitk.Image, XimHeader, Dict[str, Any]]:
     """
     Read XIM image using the same LUT/differential decoding as rtk::XimImageIO::Read.
 
@@ -300,10 +300,8 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
     -------
     image : np.ndarray, shape (SizeY, SizeX), dtype=np.int32
         Decompressed image data.
-    header : XimHeader
-    meta : dict
-        Dictionary with a few important meta values
-        ('dCTProjectionAngle', 'dDetectorOffsetX_mm', 'dDetectorOffsetY_mm').
+    header : XimHeader (similar ot rtk::XimImageIO header)
+    properties : full xim header, including field not mapped to XimHeader
     """
     header, image_data_start, properties = read_xim_header(path)
 

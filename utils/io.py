@@ -16,23 +16,23 @@ import xdrt.xdr_reader as xdr_reader
 
 logger = logging.getLogger(__name__)
 
-def read_xim(file_path: str) -> sitk.Image:
-    """
-    Read a XIM file and convert to line integrals.
-    """
-    image_io = rtk.XimImageIO.New()
-    reader = itk.ImageFileReader.New(
-        FileName=file_path,
-        ImageIO=image_io
-        )
-    reader.Update()
-    itk_image = reader.GetOutput()
-    sitk_image = itk_to_sitk(itk_image)
-    return sitk_image
+# def read_xim(file_path: str) -> sitk.Image:
+#     """
+#     Read a XIM file
+#     """
+#     image_io = rtk.XimImageIO.New()
+#     reader = itk.ImageFileReader.New(
+#         FileName=file_path,
+#         ImageIO=image_io
+#         )
+#     reader.Update()
+#     itk_image = reader.GetOutput()
+#     sitk_image = itk_to_sitk(itk_image)
+#     return sitk_image
 
 def read_projections_elekta(projections_path: str, lineint: bool =True) -> sitk.Image:
     """
-    Read a projection set from the specified directory, convert to line integrals.
+    Read a projection set from the specified directory
     """
     filenames = sorted(fnmatch.filter(os.listdir(projections_path), "*.his"))
     filenames = [os.path.join(projections_path, f) for f in filenames]
@@ -86,13 +86,16 @@ def read_projections_varian(projections_path: str, lineint: bool = True, header:
 def read_image(image_path: str) -> sitk.Image:
     """
     Read an image from the specified image path using SimpleITK. Checks if the path 
-    is a directory (DICOM series) or a sitk file (e.g. NIfTI or other formats).
+    is a directory (DICOM series), .SCAN file or sitk file (e.g. NIfTI or other formats).
     """
     if os.path.isdir(image_path):
         image = read_dicom_image(image_path)
+        
     elif os.path.isfile(image_path):
         if os.path.basename(image_path).lower().endswith('.scan'):
             image = xdr_reader.read_as_simpleitk(xdr_reader.read(image_path))
+        elif os.path.basename(image_path).lower().endswith('.xim'):
+            image,_,_ = xim.read_xim_image(image_path)
         else:
             try:
                 image = sitk.ReadImage(image_path)

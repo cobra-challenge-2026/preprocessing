@@ -16,8 +16,8 @@ class DataConfig(BaseModel):
 
 class GeneralConfig(BaseModel):
     center: str
-    vendor: str  # You may still normalize this later to lowercase if needed
-
+    vendor: str 
+    
 class SettingsConfig(BaseModel):
     correct_orientation: bool = False
 
