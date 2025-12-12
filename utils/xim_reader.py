@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Python XIM reader implementing the same logic as rtk::XimImageIO.
-
-Requirements:
-    pip install numpy
+Returns SimpleITK image along with header and properties.
 """
 
 import os
@@ -62,12 +60,6 @@ class XimHeader:
     dIDUResolutionX: float = 0.0  # PixelWidth * 10.0
     dIDUResolutionY: float = 0.0  # PixelHeight * 10.0
 
-
-# -------------------------------------------------------------------------
-# Low-level helpers
-# -------------------------------------------------------------------------
-
-
 def _read_exact(f, n: int) -> bytes:
     data = f.read(n)
     if len(data) != n:
@@ -96,7 +88,6 @@ def _load_binary_char_as_int(bin_vals: bytes, n_bytes: int) -> int:
 
 
 def _cast_binary_char_to_int(bin_vals: bytes, n_bytes: int) -> int:
-    # This mimics cast_binary_char_to<long long>
     return int(_load_binary_char_as_int(bin_vals, n_bytes))
 
 
@@ -115,7 +106,6 @@ def _lut_to_bytes(val: int) -> int:
 # -------------------------------------------------------------------------
 # Properties helper
 # -------------------------------------------------------------------------
-
 
 # Map property name prefixes to (XimHeader attribute, scale_factor)
 _PROPERTY_MAP: Dict[str, Tuple[str, float]] = {
@@ -143,11 +133,9 @@ _PROPERTY_MAP: Dict[str, Tuple[str, float]] = {
     "MVCollimatorY2": ("dCollY2", 1.0),
     "MVDoseRate": ("dDoseRate", 1.0),
     "MVEnergy": ("dEnergy", 1.0),
-    # multiplied by 10.0 in C++ (cm -> mm)
     "PixelHeight": ("dIDUResolutionY", 10.0),
     "PixelWidth": ("dIDUResolutionX", 10.0),
 }
-
 
 def _apply_property(header: XimHeader, name: str, value: float) -> None:
     for prefix, (attr, scale) in _PROPERTY_MAP.items():
@@ -296,13 +284,11 @@ def can_read_xim(path: str) -> bool:
     if sizex * sizey <= 0:
         return False
 
-    # sfiletype and fileversion are not deeply checked in the original;
-    # they just care that we can read them and that sizes are > 0.
     return True
 
 
 # -------------------------------------------------------------------------
-# Image reading (Read)
+# Image reading
 # -------------------------------------------------------------------------
 
 
@@ -325,7 +311,6 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
     ydim = header.SizeY
 
     if xdim * ydim == 0:
-        # Match the "empty image" behaviour conceptually
         raise ValueError(f"Image dimensions are zero in {path}")
 
     if header.dCompressionIndicator != 1:
@@ -336,7 +321,6 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
         )
 
     with open(path, "rb") as f:
-        # Seek to the same place as C++: m_ImageDataStart
         f.seek(image_data_start, os.SEEK_SET)
 
         lookUpTableSize = _read_int32(f)
@@ -345,10 +329,7 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
         ).astype(np.uint8)
 
         compressedPixelBufferSize = _read_int32(f)
-        # NOTE: the C++ code does NOT use compressedPixelBufferSize directly,
-        # it recomputes how many bytes should be there from the LUT. We mimic that.
-
-        # First row + 1 (Int4)
+    
         buf = np.empty(xdim * ydim + 1, dtype=np.int32)
         n_first = xdim + 1
         data_first = _read_exact(f, n_first * 4)
@@ -417,7 +398,6 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
             i += 4
             iminxdim += 4
 
-        # Sanity-ish checks (mirroring the C++ asserts)
         if j > len(compr_img_buffer):
             raise AssertionError("Read past end of compressed buffer")
         if i != xdim * ydim:
@@ -428,13 +408,10 @@ def read_xim_image(path: str) -> Tuple[np.ndarray, XimHeader, Dict[str, Any]]:
     # Drop the sentinel at index 0; reshape to (Y, X)
     img = buf[1 : xdim * ydim + 1].reshape(ydim, xdim)
 
-    # Convert numpy array to SimpleITK image
     sitk_img = sitk.GetImageFromArray(img)
 
-    # Optionally set spacing if available in properties or header
     spacing_x = float(header.dIDUResolutionX) if hasattr(header, 'dIDUResolutionX') else 1.0
     spacing_y = float(header.dIDUResolutionY) if hasattr(header, 'dIDUResolutionY') else 1.0
     sitk_img.SetSpacing((spacing_x, spacing_y))
 
-    # Return SimpleITK image, header, and all metadata tags (properties)
     return sitk_img, header, properties

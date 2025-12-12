@@ -269,7 +269,7 @@ def correct_i0_varian(
     ) -> sitk.Image:
     """
     Corrects I0 (air scans/flood field) in Varian CBCT projections using a set of 10 air scans 
-    acquired before the scan. Also performs line integral conversion.
+    acquired before the scan.
     
     Parameters
     ----------
@@ -441,28 +441,6 @@ def get_scan_parameters(xml_path: str):
     
     return float(str(ma)), float(str(ms)), float(str(kv))
 
-def _process_single_projection(idx, projections_np_shared, air_corr_np_shared, scattercor_params):
-    """
-    Worker function to process a single projection.
-    Arguments are passed via partial or a mapped tuple.
-    """
-    scattercor = sc.VarianScatterCorrection(
-        xml_path=scattercor_params['xml_path'],
-        pixel_pitch_mm=scattercor_params['pixel_pitch_mm'],
-        downsample_factor=scattercor_params['downsample_factor']
-    )
-
-    I_raw = projections_np_shared[idx, :, :]
-    I_air = air_corr_np_shared[idx, :, :]
-    
-    I_cor_sc, scatter_estimate = scattercor.correct_projection(
-        I_raw,
-        I_air,
-        iterations=10,
-    )
-    
-    return idx, I_cor_sc, scatter_estimate
-
 def correct_scatter_varian(
         projections: sitk.Image, 
         geometry, 
@@ -472,7 +450,7 @@ def correct_scatter_varian(
         return_scatter: bool = False,
     ) -> sitk.Image:
     """
-    Perform scatter correction on Varian CBCT projections using RTK VarianScatterCorrection.
+    Perform scatter correction on Varian CBCT projections using scatter_corrector module.
     """
     scattercor = sc.VarianScatterCorrection(
         xml_path=scattercorxml_path,

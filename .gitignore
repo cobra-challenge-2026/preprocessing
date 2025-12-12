@@ -4,3 +4,4 @@ test_stuff.ipynb
 configs/*.yaml
 *.ipynb
 *.npy
+scattercor_code
