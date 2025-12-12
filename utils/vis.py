@@ -6,11 +6,10 @@ from matplotlib import pyplot as plt
 
 logger = logging.getLogger(__name__)
 
-
-def generate_overview_dir(
+def generate_overview(
+    cbct_clinical: sitk.Image | None,
+    cbct_rtk: sitk.Image | None,
     ct: sitk.Image | None,
-    input: sitk.Image | None,
-    ct_deformed: sitk.Image | None,
     output_path: str,
     patient_ID: str,
 ) -> None:
@@ -26,9 +25,6 @@ def generate_overview_dir(
     Returns:
     None
     """
-    if ct is None or input is None or ct_deformed is None:
-        logger.warning("One or more input images are None. Overview image will not be generated.")
-        return
 
     shape = np.shape(sitk.GetArrayFromImage(ct))
     background_ct = np.percentile(sitk.GetArrayFromImage(ct), 0.1)
@@ -52,28 +48,29 @@ def generate_overview_dir(
     size=20
     fig,ax = plt.subplots(3,3,figsize=(size,y_len*size),gridspec_kw=gridspec_kw)
 
-    # ax[0,1].imshow(sitk.GetArrayFromImage(ct)[slice_ax,:,:],cmap='gray',vmin=background_ct,vmax=high_ct)
-    ax[0,0].imshow(sitk.GetArrayFromImage(input)[slice_ax,:,:],cmap='gray',vmin=background_input,vmax=high_input)
+    ax[0,0].imshow(sitk.GetArrayFromImage(ct)[slice_ax,:,:],cmap='gray',vmin=background_ct,vmax=high_ct)
+    ax[0,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[slice_ax,:,:],cmap='gray',vmin=background_input,vmax=high_input)
+    ax[0,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[slice_ax,:,:],cmap='gray',vmin=background_ct,vmax=high_ct)
     # ax[0,3].imshow(sitk.GetArrayFromImage(ct)[slice_ax,:,:],cmap='Blues',alpha=0.5,vmin=background_ct,vmax=high_ct)
-    ax[0,1].imshow(sitk.GetArrayFromImage(ct_deformed)[slice_ax,:,:],cmap='gray',vmin=background_ct,vmax=high_ct)
-    ax[0,2].imshow(sitk.GetArrayFromImage(input)[slice_ax,:,:],cmap='Reds',alpha=0.5,vmin=background_input,vmax=high_input)
-    ax[0,2].imshow(sitk.GetArrayFromImage(ct_deformed)[slice_ax,:,:],cmap='Blues',alpha=0.5,vmin=background_ct,vmax=high_ct)
+    
+    # ax[0,2].imshow(sitk.GetArrayFromImage(cbct_clinical)[slice_ax,:,:],cmap='Reds',alpha=0.5,vmin=background_input,vmax=high_input)
+    # ax[0,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[slice_ax,:,:],cmap='Blues',alpha=0.5,vmin=background_ct,vmax=high_ct)
 
-    # ax[1,1].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
+    ax[1,1].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
     ax[1,0].imshow(sitk.GetArrayFromImage(input)[::-1,:,slice_sag],cmap='gray',aspect=3,vmin=background_input,vmax=high_input)
-    # ax[1,3].imshow(sitk.GetArrayFromImage(input)[::-1,:,slice_sag],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
-    # ax[1,3].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
-    ax[1,1].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,:,slice_sag],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
+    ax[1,3].imshow(sitk.GetArrayFromImage(input)[::-1,:,slice_sag],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
+    ax[1,3].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
+    #ax[1,1].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,:,slice_sag],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
     ax[1,2].imshow(sitk.GetArrayFromImage(input)[::-1,:,slice_sag],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
-    ax[1,2].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,:,slice_sag],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
+    #ax[1,2].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,:,slice_sag],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
 
-    # ax[2,1].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
+    ax[2,1].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
     ax[2,0].imshow(sitk.GetArrayFromImage(input)[::-1,slice_cor,:],cmap='gray',aspect=3,vmin=background_input,vmax=high_input)
-    # ax[2,3].imshow(sitk.GetArrayFromImage(input)[::-1,slice_cor,:],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
-    # ax[2,3].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
-    ax[2,1].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,slice_cor,:],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
+    ax[2,3].imshow(sitk.GetArrayFromImage(input)[::-1,slice_cor,:],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
+    ax[2,3].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
+    #ax[2,1].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,slice_cor,:],cmap='gray',aspect=3,vmin=background_ct,vmax=high_ct)
     ax[2,2].imshow(sitk.GetArrayFromImage(input)[::-1,slice_cor,:],cmap='Reds',aspect=3,alpha=0.5,vmin=background_input,vmax=high_input)
-    ax[2,2].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,slice_cor,:],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
+    #ax[2,2].imshow(sitk.GetArrayFromImage(ct_deformed)[::-1,slice_cor,:],cmap='Blues',aspect=3,alpha=0.5,vmin=background_ct,vmax=high_ct)
 
     def add_text(ax,text):
         props = dict(facecolor='white', alpha=0.9, edgecolor='white', boxstyle='round,pad=0.5')

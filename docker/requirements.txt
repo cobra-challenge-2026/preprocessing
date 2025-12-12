@@ -6,4 +6,7 @@ convexAdam
 TotalSegmentator
 ipykernel
 pydantic
+numba
 itk-rtk-cuda124
+xmltodict
+xdrt

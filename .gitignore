@@ -1,4 +1,6 @@
 __pycache__/
 */__pycache__/
 test_stuff.ipynb
-./configs/*.yml
+configs/*.yaml
+*.ipynb
+*.npy

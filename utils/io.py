@@ -3,9 +3,85 @@ import SimpleITK as sitk
 import numpy as np
 import nibabel as nib
 import logging
-from typing import Optional
+import subprocess as sub
+import tempfile
+import configparser as cpars
+import xml.etree.ElementTree as ET
+from typing import Any, Optional
+import itk
+from itk import RTK as rtk
+import fnmatch
+import utils.xim_reader as xim
+import xdrt.xdr_reader as xdr_reader
 
 logger = logging.getLogger(__name__)
+
+def read_xim(file_path: str) -> sitk.Image:
+    """
+    Read a XIM file and convert to line integrals.
+    """
+    image_io = rtk.XimImageIO.New()
+    reader = itk.ImageFileReader.New(
+        FileName=file_path,
+        ImageIO=image_io
+        )
+    reader.Update()
+    itk_image = reader.GetOutput()
+    sitk_image = itk_to_sitk(itk_image)
+    return sitk_image
+
+def read_projections_elekta(projections_path: str, lineint: bool =True) -> sitk.Image:
+    """
+    Read a projection set from the specified directory, convert to line integrals.
+    """
+    filenames = sorted(fnmatch.filter(os.listdir(projections_path), "*.his"))
+    filenames = [os.path.join(projections_path, f) for f in filenames]
+    logger.info(f"Found {len(filenames)} projection files in {projections_path}")
+
+    OutputPixelType = itk.F
+    Dimension = 3
+    OutputImageType = itk.Image[OutputPixelType, Dimension]
+
+    reader = rtk.ProjectionsReader[OutputImageType].New()
+    reader.SetFileNames(filenames)
+    reader.SetImageIO(itk.HisImageIO.New())
+    if lineint:
+        reader.SetComputeLineIntegral(True)
+    else:
+        reader.SetComputeLineIntegral(False)
+    reader.Update()
+    
+    projections = reader.GetOutput()
+    projections = itk_to_sitk(projections)
+    
+    return projections
+
+def read_projections_varian(projections_path: str, lineint: bool = True, header:bool = False) -> sitk.Image:
+    filenames = sorted(fnmatch.filter(os.listdir(projections_path), "*.xim"))
+    filenames = [os.path.join(projections_path, f) for f in filenames][0:-1] # remove last file as it is often incomplete
+
+    OutputPixelType = itk.F
+    Dimension = 3
+    OutputImageType = itk.Image[OutputPixelType, Dimension]
+
+    reader = rtk.ProjectionsReader[OutputImageType].New()
+    reader.SetFileNames(filenames)
+    reader.SetImageIO(itk.XimImageIO.New())
+    if lineint:
+        reader.SetComputeLineIntegral(True)
+    else:
+        reader.SetComputeLineIntegral(False)
+    reader.Update()
+    
+    projections = reader.GetOutput()
+    projections = itk_to_sitk(projections)
+    
+    # get header info for one projection
+    if header:
+        _, _, header = xim.read_xim_header(filenames[len(filenames)//2])
+        return projections, header
+    else:
+        return projections
 
 def read_image(image_path: str) -> sitk.Image:
     """
@@ -15,7 +91,14 @@ def read_image(image_path: str) -> sitk.Image:
     if os.path.isdir(image_path):
         image = read_dicom_image(image_path)
     elif os.path.isfile(image_path):
-        image = sitk.ReadImage(image_path)
+        if os.path.basename(image_path).lower().endswith('.scan'):
+            image = xdr_reader.read_as_simpleitk(xdr_reader.read(image_path))
+        else:
+            try:
+                image = sitk.ReadImage(image_path)
+            except Exception as e:
+                logger.error(f"Error reading image file {image_path}: {e}")
+                raise
     else:
         logger.error(f"Image path not found: {image_path}")
         raise FileNotFoundError(f"Image path not found: {image_path}")
@@ -66,6 +149,58 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
     sitk.WriteImage(image, image_path, useCompression=compression) # type: ignore
     logger.info(f'Image saved to {image_path}')
 
+def itk_to_sitk(itk_image):
+    # 1. Convert ITK image to a NumPy array
+    array = itk.array_from_image(itk_image)
+    
+    # 2. Create SimpleITK image from the NumPy array
+    sitk_image = sitk.GetImageFromArray(array)
+    
+    # --- METADATA COPY ---
+    
+    # A. Spacing (Copy directly)
+    sitk_image.SetSpacing(list(itk_image.GetSpacing()))
+    
+    # B. Origin (CALCULATE based on StartIndex)
+    # Get the index of the first pixel in the buffer (e.g., [4, 4, 0])
+    start_index = itk_image.GetBufferedRegion().GetIndex()
+    
+    # Calculate the physical position of that specific pixel
+    # This accounts for the shift of 3.2mm you noticed
+    new_origin = itk_image.TransformIndexToPhysicalPoint(start_index)
+    
+    sitk_image.SetOrigin(list(new_origin))
+    
+    # C. Direction (Flatten the matrix)
+    itk_direction = itk_image.GetDirection()
+    itk_dims = itk_image.GetImageDimension()
+    flat_direction = []
+    for i in range(itk_dims):
+        for j in range(itk_dims):
+            flat_direction.append(itk_direction.GetVnlMatrix().get(i, j))
+            
+    sitk_image.SetDirection(flat_direction)
+    
+    return sitk_image
+
+def sitk_to_itk(sitk_image):
+    # Convert pixel buffer
+    arr = sitk.GetArrayFromImage(sitk_image)
+    itk_image = itk.image_view_from_array(arr)
+
+    dimension = sitk_image.GetDimension()
+
+    itk_image.SetOrigin(sitk_image.GetOrigin())
+    itk_image.SetSpacing(sitk_image.GetSpacing())
+
+    sitk_direction = sitk_image.GetDirection()
+    direction_np = np.array(sitk_direction, dtype=float).reshape((dimension, dimension))
+
+    # ITK Python understands NumPy arrays for direction
+    itk_image.SetDirection(direction_np)
+
+    return itk_image
+
 def sitk_to_nib(sitk_image:Optional[sitk.Image]):
     """
     Convert a SimpleITK image to a NIfTI image using nibabel.
@@ -113,3 +248,12 @@ def nib_to_sitk(nib_image) -> sitk.Image:
     img_sitk.SetDirection((1, 0, 0, 0, 1, 0, 0, 0, 1))
 
     return img_sitk
+
+def write_geometry(geometry:Any, file_path:str)->None:
+    """
+    Write RTK geometry to XML file.
+    """
+    writer = rtk.ThreeDCircularProjectionGeometryXMLFileWriter.New()
+    writer.SetFilename(file_path)
+    writer.SetObject(geometry)
+    writer.WriteFile()

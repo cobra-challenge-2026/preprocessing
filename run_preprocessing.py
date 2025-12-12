@@ -3,12 +3,17 @@ import logging
 import torch
 from preprocessor import PreProcessor
 from utils.config import load_patient_configs
+import argparse
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
-
-    configs = load_patient_configs('./configs/MR_CT_TH_Train_config.yml')
+    
+    # load config file from first argument
+    parser = argparse.ArgumentParser(description="Run preprocessing for patients.")
+    parser.add_argument('-config_file', '-c', type=str, help='Path to the configuration file.')
+    args = parser.parse_args()
+    configs = load_patient_configs(args.config_file)
     skip_existing = True
 
     for patient_id, config in configs.items():

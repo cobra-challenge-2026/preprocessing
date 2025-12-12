@@ -1,27 +1,41 @@
 import yaml
-from pydantic import BaseModel, Field
-from typing import List, Optional, Union
+from pydantic import BaseModel
+from typing import Optional, Dict
+
+class DataConfig(BaseModel):
+    clinical_recon: str
+    correctionini: Optional[str] = None
+    ct: str
+    framesxml: Optional[str] = None
+    inifile: Optional[str] = None
+    output: str
+    projections: str
+    scanxml: Optional[str] = None
+    airscans: Optional[str] = None
+    scattercorxml: Optional[str] = None
+
+class GeneralConfig(BaseModel):
+    center: str
+    vendor: str  # You may still normalize this later to lowercase if needed
+
+class SettingsConfig(BaseModel):
+    correct_orientation: bool = False
 
 class PatientConfig(BaseModel):
-    modality: str
-    region: str
-    ct_path: str
-    input_path: str
-    sr_mask: str
-    sr_fov: str
-    output_dir: str
-    ts_segmentation: bool
-    sr_structures: str
+    data: DataConfig
+    general: GeneralConfig
+    settings: SettingsConfig = SettingsConfig()
 
-def load_patient_configs(config_path: str) -> dict[str, PatientConfig]:
-    with open(config_path, 'r') as f:
+def load_patient_configs(config_path: str) -> Dict[str, PatientConfig]:
+    with open(config_path, "r") as f:
         raw_configs = yaml.safe_load(f)
-    
-    validated_configs = {}
-    for patient_id, config in raw_configs.items():
+
+    validated_configs: Dict[str, PatientConfig] = {}
+
+    for patient_id, config_block in raw_configs.items():
         try:
-            validated_configs[patient_id] = PatientConfig(**config)
+            validated_configs[patient_id] = PatientConfig(**config_block)
         except Exception as e:
             print(f"Error validating config for {patient_id}: {e}")
-            
+
     return validated_configs

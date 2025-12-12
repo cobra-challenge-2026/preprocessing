@@ -1,5 +1,5 @@
 services:
-  COBRA:
+  cobra:
     build:
       context: .
     volumes:
@@ -12,5 +12,5 @@ services:
         reservations:
           devices:
           - driver: nvidia
-            count: 'all'
+            device_ids: ['3']
             capabilities: [gpu]
