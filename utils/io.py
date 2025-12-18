@@ -4,6 +4,7 @@ import numpy as np
 import nibabel as nib
 import logging
 import subprocess as sub
+import shutil
 import tempfile
 import configparser as cpars
 import xml.etree.ElementTree as ET
@@ -138,6 +139,53 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
     sitk.WriteImage(image, image_path, useCompression=compression) # type: ignore
     logger.info(f'Image saved to {image_path}')
 
+def read_ini_files(reconstruction_dir: str, sections = ['RECONSTRUCTION', 'ALIGNMENT']) -> dict:
+    """
+    Load and parse all INI files in the specified reconstruction directory (only relevant for Elekta data).
+    Args:
+        reconstruction_dir (str): Path to the directory containing INI files.
+    Returns:
+        dict: A dictionary containing parsed INI file data.
+    """
+    ini_files = fnmatch.filter(os.listdir(reconstruction_dir), '*.INI*')
+
+    if len(ini_files) != 4:
+        logger.error(f"Expected 4 INI files, found {len(ini_files)} files.")
+
+    remove_keys = [
+        'acquisitiondate', 
+        'acquisitiontime', 
+        'reconstructiondate', 
+        'reconstructiontime',
+        'reconstructionoutputfile',
+        'alignmentapprovalby',
+        'alignmentapprovaldate',
+        'alignmentapprovalstatus',
+        'alignmentapprovaltime',
+        'correctionapprovalby',
+        'correctionapprovaldate',
+        'correctionapprovalstatus',
+        'correctionapprovaltime',
+        'datetime',
+        'reconstructionprotocolname'
+    ]
+    reconstruction_dict = {section: {} for section in sections}
+
+    for ini_file in ini_files:
+        parser = cpars.ConfigParser()
+        parser.read(os.path.join(reconstruction_dir, ini_file))
+        
+        for section in sections:
+            if section not in parser.sections():
+                logger.warning(f"Section '{section}' not found in file '{ini_file}'. Skipping.")
+                continue
+            for key, value in parser.items(section, raw=True):
+                if key.lower() in remove_keys:
+                    continue
+                reconstruction_dict[section][key] = value
+    
+    return reconstruction_dict
+
 def itk_to_sitk(itk_image):
     array = itk.array_from_image(itk_image)
     
@@ -209,6 +257,15 @@ def nib_to_sitk(nib_image) -> sitk.Image:
 
     return img_sitk
 
+def read_geometry(geometry_path:str)->None:
+    """
+    Read RTK geometry file.
+    """
+    reader = rtk.ThreeDCircularProjectionGeometryXMLFileReader.New()
+    reader.SetFilename(geometry_path)
+    reader.GenerateOutputInformation()
+    return reader.GetGeometry()
+
 def write_geometry(geometry:Any, file_path:str)->None:
     """
     Write RTK geometry to XML file.
@@ -217,3 +274,15 @@ def write_geometry(geometry:Any, file_path:str)->None:
     writer.SetFilename(file_path)
     writer.SetObject(geometry)
     writer.WriteFile()
+
+def copy_calibration_dir(source_dir:str, target_dir:str)->None:
+    """
+    Copy the calibration directory from source to target.
+    """
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+    
+    shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+    
+    logger.info(f"Calibration directory copied from {source_dir} to {target_dir}")
+    

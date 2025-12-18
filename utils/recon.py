@@ -8,6 +8,7 @@ import itk
 from itk import RTK as rtk
 import fnmatch
 import utils.io as io
+import utils.img as img
 import utils.xim_reader as xim_reader
 import utils.scatter_corrector as sc
 from scipy.optimize import curve_fit
@@ -140,7 +141,7 @@ def fdk(
     pssf.SetAngularGapThreshold(20 * 3.14159265359 / 180.0)
     
     feldkamp.SetInput(0, constantImageSource.GetOutput())
-    feldkamp.SetInput(1, ddf.GetOutput())
+    feldkamp.SetInput(1, pssf.GetOutput())
     feldkamp.SetGeometry(geometry)
     feldkamp.GetRampFilter().SetTruncationCorrection(padding)
     feldkamp.GetRampFilter().SetHannCutFrequency(hann)
@@ -189,26 +190,22 @@ def read_air_scans(air_scans_path: str, rotation: str = 'CW', return_sitk = True
     
     return imgs, headers
 
-def correct_i0_elekta(projections: sitk.Image, ini_file: str) -> sitk.Image:
+def correct_i0_elekta(projections: sitk.Image, reconstruction_ini: str) -> sitk.Image:
     """
     Perform I0 correction for elekta projections using ini file parameters.
     """
-    config = cpars.ConfigParser()
-    config.read(ini_file)
-    
-    ma_scan = config.getfloat('RECONSTRUCTION', 'TubeMA')
-    ms_scan = config.getfloat('RECONSTRUCTION', 'TubeKVLength')
-    
-    kvFilter = config.get('RECONSTRUCTION', 'KVFilter')
+    ma_scan = float(reconstruction_ini['RECONSTRUCTION']['tubema'])
+    ms_scan = float(reconstruction_ini['RECONSTRUCTION']['tubekvlength'])
+    kvFilter = reconstruction_ini['RECONSTRUCTION']['kvfilter']
     
     if kvFilter == 'F1':
-        ma_air = config.getfloat('RECONSTRUCTION', 'FloodImageFilterMA')
-        ms_air = config.getfloat('RECONSTRUCTION', 'FloodImageFilterMS')
-        i0_norm = config.getfloat('RECONSTRUCTION', 'FloodImageFilterNorm')
+        ma_air = float(reconstruction_ini['RECONSTRUCTION']['floodimagefilterma'])
+        ms_air = float(reconstruction_ini['RECONSTRUCTION']['floodimagefilterms'])
+        i0_norm = float(reconstruction_ini['RECONSTRUCTION']['floodimagefilternorm'])
     elif kvFilter == 'F0':
-        ma_air = config.getfloat('RECONSTRUCTION', 'FloodImageOpenMA')
-        ms_air = config.getfloat('RECONSTRUCTION', 'FloodImageOpenMS')
-        i0_norm = config.getfloat('RECONSTRUCTION', 'FloodImageOpenNorm')
+        ma_air = float(reconstruction_ini['RECONSTRUCTION']['floodimageopenma'])
+        ms_air = float(reconstruction_ini['RECONSTRUCTION']['floodimageopenms'])
+        i0_norm = float(reconstruction_ini['RECONSTRUCTION']['floodimageopennorm'])
     else:
         raise ValueError(f"Unknown KVFilter value: {kvFilter}")
     

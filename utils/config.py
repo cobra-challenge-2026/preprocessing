@@ -3,16 +3,21 @@ from pydantic import BaseModel
 from typing import Optional, Dict
 
 class DataConfig(BaseModel):
+    # general data paths
     clinical_recon: str
-    correctionini: Optional[str] = None
     ct: str
-    framesxml: Optional[str] = None
-    inifile: Optional[str] = None
-    output: str
     projections: str
+    output: str
+
+    # elekta specific paths
+    reconstruction_dir: Optional[str] = None
+    framesxml: Optional[str] = None
+    
+    # varian specific paths
     scanxml: Optional[str] = None
     airscans: Optional[str] = None
     scattercorxml: Optional[str] = None
+    calibration_dir: Optional[str] = None
 
 class GeneralConfig(BaseModel):
     center: str

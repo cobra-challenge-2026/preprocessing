@@ -23,8 +23,7 @@ for patient in patients:
             'data': {
                 'projections': projections_path,
                 'framesxml': os.path.join(projections_path, '_Frames.xml'),
-                'inifile': os.path.join(projections_path, 'Reconstruction', sorted(fnmatch.filter(os.listdir(os.path.join(projections_path, 'Reconstruction')), '*.INI.XVI'))[-1]),
-                'correctionini': os.path.join(projections_path, 'Reconstruction', fnmatch.filter(os.listdir(os.path.join(projections_path, 'Reconstruction')), '*.SCAN')[0].replace('.SCAN', '.INI.XVI')),
+                'reconstruction_dir': os.path.join(projections_path, 'Reconstruction'),
                 'clinical_recon': os.path.join(projections_path, 'Reconstruction', fnmatch.filter(os.listdir(os.path.join(projections_path, 'Reconstruction')), '*.SCAN')[0]),
                 'ct': ct_path,
                 'output': os.path.join(data_dir, patient, 'output'),

@@ -15,6 +15,73 @@ import utils.img as img
 
 logger = logging.getLogger(__name__)
 
+def rigid_registration(
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    translation_only: bool = True
+) -> sitk.Image:
+    """
+    Perform translation/rigid registration between fixed and moving images using SimpleITK.
+    """
+    fixed = sitk.Cast(fixed, sitk.sitkFloat32)
+    moving = sitk.Cast(moving, sitk.sitkFloat32)
+    transform = sitk.Euler3DTransform()
+
+    initial_transform = sitk.CenteredTransformInitializer(
+        fixed,
+        moving,
+        transform,
+        sitk.CenteredTransformInitializerFilter.GEOMETRY
+    )
+
+    R = sitk.ImageRegistrationMethod()
+    R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    R.SetMetricSamplingStrategy(R.RANDOM)
+    R.SetMetricSamplingPercentage(0.2) 
+    R.SetInterpolator(sitk.sitkLinear)
+    R.SetOptimizerAsGradientDescent(
+        learningRate=2.0,
+        numberOfIterations=1000,
+        convergenceMinimumValue=1e-6,
+        convergenceWindowSize=10
+    )
+    R.SetOptimizerScalesFromPhysicalShift() 
+    R.SetShrinkFactorsPerLevel([4, 2, 1])
+    R.SetSmoothingSigmasPerLevel([2, 1, 0])
+    R.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+    R.SetInitialTransform(initial_transform, inPlace=False)
+
+    final_transform = R.Execute(fixed, moving)
+
+    if translation_only:
+        rx, ry, rz, tx, ty, tz = final_transform.GetParameters()
+        t0 = sitk.TranslationTransform(3)
+        t0.SetOffset((tx, ty, tz))
+        R.SetInitialTransform(t0, inPlace=False)
+        final_transform = R.Execute(fixed, moving)
+        final_transform = final_transform.GetBackTransform()
+    
+    return final_transform
+
+def shift_origin(
+    image: sitk.Image,
+    transform: sitk.Transform
+) -> sitk.Image:
+    """
+    Shift the origin of a SimpleITK image to a new origin based on the 
+    provided transform without interpolation/resampling.
+    """
+    tx, ty, tz = transform.GetOffset()
+
+    origin = image.GetOrigin()
+    new_origin = (origin[0] - tx,
+                origin[1] - ty,
+                origin[2] - tz)
+
+    image.SetOrigin(new_origin)
+    return image
+
+
 def run_deformable(
     fixed: sitk.Image | None = None,
     moving: sitk.Image | None = None,

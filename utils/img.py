@@ -7,40 +7,50 @@ import utils.io as io
 from typing import Optional
 import configparser as cpars
 import pydicom
+from typing import Any
+import os
+import fnmatch
+import yaml
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-def fix_array_order(img: sitk.Image) -> sitk.Image:
+def rtk_to_HU(img: sitk.Image) -> sitk.Image:
+    """
+    Converts RTK reconstructed image to Hounsfield Units (HU)
+    CBCT_HU =  CBCT_μ * 2^16 - 1024
+    """
+    img = img*(2**16)-1024
+    return img
+
+def fix_array_order(img: sitk.Image, order = (1, 2, 0), flip=()) -> sitk.Image:
     """
     This function ensures the RTK reconstructed image is in a similar configuration as the .SCAN file loaded with xdrt
     """
     img_np = sitk.GetArrayFromImage(img)
-    img_np = np.transpose(img_np, (1, 2, 0))
-    img_np = img_np[::-1,:,:]
+    img_np = np.transpose(img_np, order)
+    img_np = np.flip(img_np, axis=flip)
     
     new_img = sitk.GetImageFromArray(img_np)
     
     old_origin = img.GetOrigin()
-    new_origin = (old_origin[0], old_origin[2], old_origin[1])
+    new_origin = (old_origin[order[2]], old_origin[order[1]], old_origin[order[0]])
     
     old_spacing = img.GetSpacing()
-    new_spacing = (old_spacing[0], old_spacing[2], old_spacing[1])
+    new_spacing = (old_spacing[order[2]], old_spacing[order[1]], old_spacing[order[0]])
     
     new_img.SetOrigin(new_origin)
     new_img.SetSpacing(new_spacing)
     
     return new_img
 
-def allign_images_ini(image: sitk.Image, correction_ini=None) -> sitk.Image:
+def allign_images_ini(image: sitk.Image, reconstruction_ini=None) -> sitk.Image:
     """
     alligns Elekta CBCT with corresponding planning CT using parameters written in a .INI file in the Reconstructin folder
     """
-    # Load .INI.XVI file (the one with longer file name...)
-    with open(correction_ini) as f:
-        lines = f.readlines()
     
-    correction = [line for line in lines if line.startswith('OnlineToRefTransformCorrection')][0]
-    values = correction.split('=')[1].split(' ')
+    correction = reconstruction_ini['ALIGNMENT']['onlinetoreftransformcorrection']
+    values = correction.split(' ')
     values = [float(v) for v in values if v != '']
     
     R = np.array([[values[0], values[4], values[8]],
@@ -54,12 +64,7 @@ def allign_images_ini(image: sitk.Image, correction_ini=None) -> sitk.Image:
 
     return image
 
-import os
-import pydicom
-import fnmatch
-
-
-def load_tags_from_file(file_path):
+def _load_tags(file_path):
     """Reads the tags configuration file and returns a list of keywords."""
     if not os.path.exists(file_path):
         print(f"Error: Configuration file '{file_path}' not found.")
@@ -68,37 +73,185 @@ def load_tags_from_file(file_path):
     with open(file_path, 'r') as f:
         return [line.strip() for line in f if line.strip()]
 
-def extract_dicom_metadata_to_dict(directory_path, tags_file):
+def _to_builtin(v):
+    if v is None:
+        return None
+
+    if isinstance(v, (list, tuple)):
+        return [_to_builtin(x) for x in v]
+
+    if isinstance(v, (pydicom.multival.MultiValue, list, tuple)):
+        return [_to_builtin(x) for x in v]
+    
+    if isinstance(v, (pydicom.valuerep.DSfloat, pydicom.valuerep.DSdecimal)):
+        return float(v)
+    
+    if isinstance(v, pydicom.valuerep.IS):
+        return int(v)
+
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            v = v.decode("utf-8")
+        except Exception:
+            return v.hex()
+
+    if isinstance(v, str):
+        s = v.strip()
+        if s:
+            try:
+                i = int(s)
+                return i
+            except ValueError:
+                try:
+                    return float(s)
+                except ValueError:
+                    return v
+        return None  # empty string -> null (optional)
+
+    return v
+
+def extract_dicom_metadata(directory_path, tags_file):
     """
     Extracts specified DICOM metadata tags from the first DICOM file in the given directory.
     """
-    target_tags = load_tags_from_file(tags_file)
+    target_tags = _load_tags(tags_file)
     extracted_tags = {} 
 
     if not target_tags:
         return {}
 
-    fn = sorted(fnmatch.filter(os.listdir(directory_path), '*.dcm'))[0]
+    reader = sitk.ImageSeriesReader()
+    series_ids = reader.GetGDCMSeriesIDs(directory_path)
+
+    # find series with most files
+    max_files = 0
+    longest_series = None
     
+    for sid in series_ids:
+        filenames = reader.GetGDCMSeriesFileNames(directory_path, sid)
+        if len(filenames) > max_files:
+            max_files = len(filenames)
+            longest_series = sid
+    
+    fn = reader.GetGDCMSeriesFileNames(directory_path, longest_series)[0]
+    # fn = sorted(fnmatch.filter(os.listdir(directory_path), '*.dcm'))[0]
     file_path = os.path.join(directory_path, fn)
-    print(f"Processing file: {file_path}")
     try:
-        ds = pydicom.dcmread('/data/LMU/patientLMU007/CT_SET/2.16.840.1.114337.1.1.1524060727.0/CT1.dcm', stop_before_pixels=True)
+        ds = pydicom.dcmread(file_path, stop_before_pixels=True)
         for tag in target_tags:
             elem = ds.get(tag)
-            if elem is not None:
-                try:
-                    extracted_tags[tag] = elem
-                except Exception as e:
-                    print(f"Error extracting tag '{tag}': {e}")
-            else:
-                    extracted_tags[tag] = None
+            extracted_tags[tag] = _to_builtin(elem) if elem is not None else None
                     
     except Exception as e:
         print(f"Error reading DICOM file '{file_path}': {e}")
     
     return extracted_tags
 
+def extract_elekta_metadata(tags_yaml: str, reconstruction_ini: dict, projections: sitk.Image, cbct_clinical: sitk.Image, geometry: Any) -> dict:
+    """
+    Extracts Elekta CBCT metadata from reconstruction INI files and other related files.
+    """
+    with open(tags_yaml, 'r') as f:
+        tags = yaml.safe_load(f)
+
+    metadata_dict = {}
+
+    # extract tags from ini files
+    for tag in tags:
+        for section in reconstruction_ini:
+            if tags[tag]['Elekta'] in reconstruction_ini[section]:
+                metadata_dict[tag] = _to_builtin(reconstruction_ini[section][tags[tag]['Elekta']])
+                break
+
+    # extract tags from projections.mha files
+    metadata_dict['Frames'] = int(projections.GetSize()[2])
+    metadata_dict['ImagerResX'] = _to_builtin(projections.GetSpacing()[0])
+    metadata_dict['ImagerResY'] = _to_builtin(projections.GetSpacing()[1])
+    metadata_dict['ImagerSizeX'] = _to_builtin(projections.GetSize()[0])
+    metadata_dict['ImagerSizeY'] = _to_builtin(projections.GetSize()[1])
+
+    # extract tags from cbct_clinical.mha
+    metadata_dict['ReconstructionSpacingX'] = _to_builtin(cbct_clinical.GetSpacing()[0])
+    metadata_dict['ReconstructionSpacingY'] = _to_builtin(cbct_clinical.GetSpacing()[1])
+    metadata_dict['ReconstructionSpacingZ'] = _to_builtin(cbct_clinical.GetSpacing()[2])
+    metadata_dict['ReconstructionSizeX'] = _to_builtin(cbct_clinical.GetSize()[0])
+    metadata_dict['ReconstructionSizeY'] = _to_builtin(cbct_clinical.GetSize()[1])
+    metadata_dict['ReconstructionSizeZ'] = _to_builtin(cbct_clinical.GetSize()[2])
+    
+    # extract tags from geometry 
+    # check if it's a half or full arc
+    angles = geometry.GetGantryAngles()
+    angles = [angle * 180.0 / 3.141592653589793 for angle in angles]
+    if angles[0] + angles[-1] < 300:
+        metadata_dict['Trajectory'] = 'half'
+    else:
+        metadata_dict['Trajectory'] = 'full'
+    metadata_dict['StartAngle'] = angles[0]
+    metadata_dict['StopAngle'] = angles[-1]
+    # check if detector is offset
+    if abs(geometry.GetProjectionOffsetsX()[0]) >= 5 or abs(geometry.GetProjectionOffsetsY()[0]) >= 5:
+        metadata_dict['Fan'] = 'Half'
+    else:
+        metadata_dict['Fan'] = 'Full'
+    metadata_dict['DetectorOffsetX'] = geometry.GetProjectionOffsetsX()[0]
+    metadata_dict['DetectorOffsetY'] = geometry.GetProjectionOffsetsY()[0]
+
+    # others
+    metadata_dict['ScatterGrid'] = 'None'
+    metadata_dict['Manufacturer'] = 'Elekta'
+    
+    return metadata_dict
+
+def extract_varian_metadata(tags_yaml:str, scan_xml: str, projections: sitk.Image, cbct_clinical: sitk.Image, geometry: Any) -> dict:
+    # load yaml file with vendor tags
+    with open(tags_yaml, 'r') as f:
+        tags_dict = yaml.safe_load(f)
+
+    # read scan xml file and extract available metadata
+    tree = ET.parse(scan_xml)   # load file
+    root = tree.getroot() 
+    ns = {
+        "lib": "http://baden.varian.com/cr.xsd"
+    }
+
+    metadata_dict = {}
+
+    for tag in tags_dict:
+        if tags_dict[tag]['Varian'] is not None:
+            for book in root.findall("lib:Acquisitions", ns):
+                if book.find(f"lib:{tags_dict[tag]['Varian']}", ns) is not None:
+                    value = book.find(f"lib:{tags_dict[tag]['Varian']}", ns).text
+                else:
+                    value = None
+            metadata_dict[tag] = _to_builtin(value)
+
+    # extract tags from projections.mha files
+    metadata_dict['Frames'] = int(projections.GetSize()[2])
+    metadata_dict['ImagerResX'] = _to_builtin(projections.GetSpacing()[0])
+    metadata_dict['ImagerResY'] = _to_builtin(projections.GetSpacing()[1])
+    metadata_dict['ImagerSizeX'] = _to_builtin(projections.GetSize()[0])
+    metadata_dict['ImagerSizeY'] = _to_builtin(projections.GetSize()[1])
+
+    # extract tags from cbct_clinical.mha
+    metadata_dict['ReconstructionSpacingX'] = _to_builtin(cbct_clinical.GetSpacing()[0])
+    metadata_dict['ReconstructionSpacingY'] = _to_builtin(cbct_clinical.GetSpacing()[1])
+    metadata_dict['ReconstructionSpacingZ'] = _to_builtin(cbct_clinical.GetSpacing()[2])
+    metadata_dict['ReconstructionSizeX'] = _to_builtin(cbct_clinical.GetSize()[0])
+    metadata_dict['ReconstructionSizeY'] = _to_builtin(cbct_clinical.GetSize()[1])
+    metadata_dict['ReconstructionSizeZ'] = _to_builtin(cbct_clinical.GetSize()[2])
+
+    # extract tags from geometry 
+    angles = geometry.GetGantryAngles()
+    angles = [angle * 180.0 / 3.141592653589793 for angle in angles]
+    metadata_dict['StartAngle'] = angles[0]
+    metadata_dict['StopAngle'] = angles[-1]
+    metadata_dict['DetectorOffsetX'] = geometry.GetProjectionOffsetsX()[0]
+    metadata_dict['DetectorOffsetY'] = geometry.GetProjectionOffsetsY()[0]
+    
+    #etc.
+    metadata_dict['Manufacturer'] = 'Varian'
+        
+    return metadata_dict
 
 
 
