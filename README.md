@@ -1,40 +1,16 @@
 # COBRA2026 Preprocessing Pipeline
 
-The preprocessing pipeline used for the COBRA2026 dataset. This pipeline prepares CBCT projections and corresponding CT images for the COBRA2026 reconstruction challenge.
+This preprocessing pipeline prepares CBCT projections and corresponding CT images for the COBRA2026 reconstruction dataset/challenge.
 
 Currently preprocessing for Elekta and Varian CBCT systems is supported.
 
 ## Running the Preprocessing
 
-To run the preprocessing pipeline, use the `run_preprocessing.py` script with a configuration `.yaml` file.
+To run the preprocessing pipeline, use the `run_preprocessing.py` script with a configuration `.yaml` file. Details about the configuration options and format can be found here: [Configuration Options](configs/README.md).
 
-The configuration files should contain the following sections:
+An example script to generate a configuration file can be found here: [LMU Config Generator](configs/generate_config.py).
 
-`data`: Paths to the input CBCT projections, CT images, metadata and output directory.
-
-* `ct`: Path to CT images (can be a directory or a single file)
-* `clinical_recon`: Path to reconstructed CBCT images (can be a dicom directory or a single file, for Elekta .SCAN files are recommended)
-* `projections`: Path to CBCT projections directory
-* `output`: Path to the output directory where preprocessed data will be saved
-* `framesxml`: Path to the frames XML file (only for Elekta systems)
-* `reconstruction_dir`: Path to the 'Reconstruction' directory saved with projections (only for Elekta systems)
-* `scanxml`: Path to the Scan.xml file (only for Varian systems)
-* `airscans`: Path to the directory containing relevant air scans (only for Varian systems)
-* `scattercorxml`: Path to the scatter correction XML file (only for Varian systems)
-* `calibration_dir`: Path to the entire calibration folder (only for Varian systems)
-
-`general`: General settings such as center and vendor.
-
-* `center`: Single character representing the center (e.g. A, B, C, ...)
-* `vendor`: Elekta or Varian
-
-`settings`: Specific preprocessing settings.
-
-* `correct_orientation`: Whether to correct the orientation of the clinical/reconstructed images.
-
-Some example configuration files are located in the `configs/` directory.
-
-Furthermore, you can specify the device to use for preprocessing (e.g. `cpu` for CPU, `cuda:0` for GPU 0) and the preprocessing stage to run (1 or 2). Currently, only stage 1 is implemented and GPU acceleration is only used for reconstruction using RTK.
+Furthermore, you can specify the device to use for preprocessing (e.g. `cpu` for CPU, `cuda:0` for GPU 0) and the preprocessing stage to run (1 or 2). Currently, only stage 1 is implemented and GPU acceleration is only used for CBCT reconstruction using RTK.
 
 ### Usage
 
@@ -59,16 +35,17 @@ python3 run_preprocessing.py -c ./configs/lmu_config.yaml -d 'cuda:0' -s 1
 
 ## Requirements
 
-A dockerfile is provided to set up the required environment. The docker image can be built using the following command:
+In the docker directory a `Dockerfile` and `docker-compose.yaml` file are provided to set up the required environment. The docker image can be built using the following command:
 
 ```bash
-docker build -t cobra_preprocessing -f Dockerfile .
+cd docker
+docker compose build
 ```
 
-An examplary docker compose file is also provided to simplify running the docker container and mounting some directories. To run the docker container and start a bash shell use the following commands:
+To start a docker container modify the `docker-compose.yml` to mount your data directory and then run the following command within the docker directory:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+docker compose up -d
 docker exec -it cobra_preprocessing bash
 ```
 

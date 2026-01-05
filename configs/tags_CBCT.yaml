@@ -1,0 +1,51 @@
+TubeCurrent:
+  Elekta: tubema
+  Varian: Current
+TubeVoltage:
+  Elekta: tubekv
+  Varian: Voltage
+PulseLength:
+  Elekta: tubekvlength
+  Varian: PulseLength
+KVFilter:
+  Elekta: kvfilter
+  Varian: KVFilter
+Bowtie:
+  Elekta: 
+  Varian: Bowtie
+Collimator:
+  Elekta: collimatorname
+  Varian: 
+ScatterGrid:
+  Elekta: antiscattergrid
+  Varian: ScatterGrid
+Detector:
+  Elekta: 
+  Varian: Detector
+Scintillator:
+  Elekta: 
+  Varian: Scintillator
+Fan:
+  Elekta: 
+  Varian: Fan
+Trajectory:
+  Elekta: 
+  Varian: Trajectory
+StartAngle:
+  Elekta: startangle
+  Varian: StartAngle
+StopAngle:
+  Elekta: stopangle
+  Varian: StopAngle
+ImagerSizeX:
+  Elekta: 
+  Varian: ImagerSizeX
+ImagerSizeY:
+  Elekta: 
+  Varian: ImagerSizeY
+ImagerResX:
+  Elekta: 
+  Varian: ImagerResX
+ImagerResY:
+  Elekta: 
+  Varian: ImagerResY

@@ -1,7 +1,7 @@
 __pycache__/
 */__pycache__/
 test_stuff.ipynb
-configs/*.yaml
+configs/*_config.yaml
 *.ipynb
 *.npy
 scattercor_code

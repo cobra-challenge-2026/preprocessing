@@ -5,6 +5,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     volumes:
+      # for development purposes, mount the code directory (can be removed)
       - /project_data_2/cbct/COBRA/code/preprocessing:/code
       # change this to your data storage location
       - /project_data_2/cbct/COBRA/data:/data
