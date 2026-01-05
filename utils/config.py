@@ -25,6 +25,7 @@ class GeneralConfig(BaseModel):
     
 class SettingsConfig(BaseModel):
     correct_orientation: bool = False
+    correct_scatter: bool = False
 
 class PatientConfig(BaseModel):
     data: DataConfig

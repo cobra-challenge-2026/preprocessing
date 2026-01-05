@@ -449,10 +449,13 @@ def correct_scatter_varian(
     """
     Perform scatter correction on Varian CBCT projections using scatter_corrector module.
     """
+    
+    spacing = projections.GetSpacing()[0:2]
+    
     scattercor = sc.VarianScatterCorrection(
         xml_path=scattercorxml_path,
-        pixel_pitch_mm=0.388,
-        downsample_factor=4
+        pixel_pitch_mm=spacing,
+        downsample_factor=8
     )
     
     projections_np = sitk.GetArrayFromImage(projections)

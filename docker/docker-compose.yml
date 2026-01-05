@@ -1,5 +1,6 @@
 services:
   cobra:
+    container_name: cobra_preprocessing
     build:
       context: .
     volumes:

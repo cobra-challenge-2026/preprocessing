@@ -61,8 +61,8 @@ class PreProcessor:
     def overview_path(self) -> str:
         return os.path.join(self.config.data.output, f'overview_{self.id}.png')
 
-    ### main preprocessing function ###
-    def run_preprocessing(self):
+    ### main preprocessing function for stage1 ###
+    def run_stage1(self):
         self.logger.info("Starting preprocessing...")
         # if self.patient_complete():
         #     self.logger.info("All preprocessing files already exist. Skipping patient...")
@@ -113,15 +113,16 @@ class PreProcessor:
                 self.config.data.projections, 
                 self.config.data.scanxml
                 )
-            self.logger.info("Correcting scatter...")
-            self.cbct_projections = recon.correct_scatter_varian(
-                projections = self.cbct_projections,
-                geometry = self.cbct_geometry,
-                scattercorxml_path = self.config.data.scattercorxml,
-                airscans_path = self.config.data.airscans
-                )
+            if self.config.settings.correct_scatter:
+                self.logger.info("Correcting scatter...")
+                self.cbct_projections_cor = recon.correct_scatter_varian(
+                    projections = self.cbct_projections,
+                    geometry = self.cbct_geometry,
+                    scattercorxml_path = self.config.data.scattercorxml,
+                    airscans_path = self.config.data.airscans
+                    )
             self.logger.info("Correcting I0...")
-            self.cbct_projections = recon.correct_i0_varian(
+            self.cbct_projections_cor = recon.correct_i0_varian(
                 projections = self.cbct_projections, 
                 projections_header = header,
                 air_scans_dir = self.config.data.airscans,
@@ -144,7 +145,7 @@ class PreProcessor:
             self.cbct_rtk = recon.fdk(
                 projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
-                gpu = True,
+                gpu = False if self.device.type == 'cpu' else True,
                 spacing = [1.0, 1.0, 1.0],
                 size = [410, 264, 410],
                 padding = 0.2,
@@ -171,7 +172,7 @@ class PreProcessor:
         
         elif self.config.general.vendor.lower() == 'varian':
             self.cbct_rtk = recon.fdk(
-                projections = self.cbct_projections, 
+                projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
                 gpu = True,
                 padding = 0.2,
@@ -238,7 +239,7 @@ class PreProcessor:
         self.logger.info("Saving preprocessed data to files...")
         if not os.path.exists(self.config.data.output):
             os.makedirs(self.config.data.output)
-        sitk.WriteImage(self.cbct_projections, self.cbct_projections_path())
+        io.save_image(self.cbct_projections, self.cbct_projections_path(), dtype='uint16')
         io.write_geometry(self.cbct_geometry, self.cbct_geometry_path())
         io.save_image(self.cbct_rtk, self.cbct_rtk_path(), dtype='int16')
         io.save_image(self.ct, self.ct_path(), dtype='int16')

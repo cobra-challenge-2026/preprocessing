@@ -8,12 +8,19 @@ class VarianScatterCorrection:
         """
         Args:
             xml_path: Path to scatter correction Calibration.xml
-            pixel_pitch_mm: pixel size of projections in mm
+            pixel_pitch_mm: pixel size in mm. Can be scalar (square) or 
+                            tuple (row_pitch, col_pitch) for rectangular pixels.
             downsample_factor: Factor to reduce image size for scatter calculation
         """
-        self.pixel_pitch_mm = pixel_pitch_mm
+        if np.isscalar(pixel_pitch_mm):
+            self.pixel_pitch_mm = (pixel_pitch_mm, pixel_pitch_mm)
+        else:
+            self.pixel_pitch_mm = tuple(pixel_pitch_mm)
+            
         self.ds_factor = downsample_factor
-        self.ds_pixel_mm = pixel_pitch_mm * downsample_factor
+        
+        self.ds_pixel_mm = (self.pixel_pitch_mm[0] * downsample_factor, 
+                            self.pixel_pitch_mm[1] * downsample_factor)
         
         # Parse XML
         self.params_path = xml_path
@@ -71,16 +78,6 @@ class VarianScatterCorrection:
         
         params['kernels'].sort(key=lambda x: x['thickness_bound'])
         
-        # Edge Response Parameters (not sure how these can be used), currently not used
-        edge_node = root.find('.//ns:EdgeResponseMask', ns)
-        if edge_node is not None:
-            params['edge'] = {
-                'range_cm': float(edge_node.find('ns:EdgeRangeMM', ns).text) / 10.0,
-                # Not entirely sure how to interpret these coefficient in the context of the original paper
-                'coef0': float(edge_node.find('ns:EdgeCoef0', ns).text),
-                'coef1': float(edge_node.find('ns:EdgeCoef1', ns).text), 
-            }
-        
         return params
 
     def calc_tau_cm(self, I_p, I_0):
@@ -90,36 +87,37 @@ class VarianScatterCorrection:
         ratio = np.divide(I_0, I_p, out=np.ones_like(I_p), where=I_p > 1e-5)
         ratio = np.maximum(ratio, 1.0)
         
-        #Equation 9
+        # Equation 9
         tau_mm = (1.0 / self.params['mu_water']) * np.log(ratio)
         return tau_mm / 10.0
 
     def generate_gaussian_kernel_cm(self, shape, sigma1_cm, sigma2_cm, B):
         """
-        Generates the form function g(x,y) in CM
+        Generates the form function g(x,y) in CM taking rectangular pixels into account.
         """
         cy, cx = shape[0] // 2, shape[1] // 2
         y, x = np.ogrid[-cy:shape[0]-cy, -cx:shape[1]-cx]
         
-        pixel_pitch_cm = self.ds_pixel_mm / 10.0 
+        py_mm, px_mm = self.ds_pixel_mm
+        py_cm, px_cm = py_mm / 10.0, px_mm / 10.0
         
-        r2 = (x * pixel_pitch_cm)**2 + (y * pixel_pitch_cm)**2
+        r2 = (x * px_cm)**2 + (y * py_cm)**2
         
         s1 = abs(sigma1_cm)
         s2 = abs(sigma2_cm)
         
-        #Equation 5
+        # Equation 5
         g = np.exp(-r2 / (2 * s1**2)) + B * np.exp(-r2 / (2 * s2**2))
         return g
     
-    def compute_edge_scaling(self, tau_map, pixel_pitch_cm):
+    def compute_edge_scaling(self, tau_map, pixel_pitch_cm_tuple):
         """
         Computes the edge-modified scaling factor s(x,y) from Section 2.5.
         """
         # Assumption (not really defined in paper): where tau_map > 0.1 cm defines the object region
         object_mask = tau_map > 0.1
-        dist_pixels = distance_transform_edt(object_mask)
-        dist_cm = dist_pixels * pixel_pitch_cm
+        
+        dist_cm = distance_transform_edt(object_mask, sampling=pixel_pitch_cm_tuple)
         
         # Linear Ramp from 0.75 to 1.0 over 8 cm (according to paper)
         ramp_distance_cm = 8.0
@@ -139,8 +137,8 @@ class VarianScatterCorrection:
         
         y = np.arange(rows) - cy
         
-        pixel_pitch_cm = self.ds_pixel_mm / 10.0
-        y_cm = y * pixel_pitch_cm
+        py_mm, _ = self.ds_pixel_mm
+        y_cm = y * (py_mm / 10.0)
         
         # Values from TIGREVarian implementation, not sure where they come from
         # https://www.sciencedirect.com/science/article/pii/S1120179722020373
@@ -159,19 +157,21 @@ class VarianScatterCorrection:
     
     def generate_detector_kernel(self, shape):
         """
-        Generates detector point-scatter function (Eq 22).
+        Generates detector point-scatter function (Eq 22) with rectangular pixels.
         """
         p = self.params['det_scatter']
         cy, cx = shape[0] // 2, shape[1] // 2
         y, x = np.ogrid[-cy:shape[0]-cy, -cx:shape[1]-cx]
         
-        pixel_pitch_cm = self.ds_pixel_mm / 10.0
-        r_cm = np.sqrt((x * pixel_pitch_cm)**2 + (y * pixel_pitch_cm)**2)
+        py_mm, px_mm = self.ds_pixel_mm
+        py_cm, px_cm = py_mm / 10.0, px_mm / 10.0
+        
+        r_cm = np.sqrt((x * px_cm)**2 + (y * py_cm)**2)
         
         val1 = -p['a2'] * r_cm
         val2 = -p['a4'] * ((r_cm - p['a5'])**3)
         
-        #Equation 22
+        # Equation 22
         h_d = p['a1'] * np.exp(val1) + p['a3'] * np.exp(val2)
         
         # Paper mentions normalization constant a0, calibration XML provides 
@@ -215,8 +215,10 @@ class VarianScatterCorrection:
         
         rows_pad, cols_pad = I_raw_pad.shape
         
-        pixel_pitch_cm = self.ds_pixel_mm / 10.0
-        integration_area_factor = pixel_pitch_cm * pixel_pitch_cm
+        py_mm, px_mm = self.ds_pixel_mm
+        py_cm, px_cm = py_mm / 10.0, px_mm / 10.0
+        
+        integration_area_factor = py_cm * px_cm
         
         # Detector scatter estimate (2.8.2)
         h_d = self.generate_detector_kernel((rows_pad, cols_pad))
@@ -244,13 +246,15 @@ class VarianScatterCorrection:
 
         # Scatter correction iteration loop 
         for it in range(iterations):
-            # Thickness map calculation and smoothing (for better robustness)
+            # Thickness map 
             tau_cm_pad = self.calc_tau_cm(I_p_pad, I_0_pad)
-            sigma_pixels = 1.5 / pixel_pitch_cm
+            
+            # Smooth thickness map
+            sigma_pixels = (1.5 / py_cm, 1.5 / px_cm)
             tau_smooth_pad = gaussian_filter(tau_cm_pad, sigma=sigma_pixels)
             
             # Edge scaling map
-            s_map = self.compute_edge_scaling(tau_smooth_pad, pixel_pitch_cm)
+            s_map = self.compute_edge_scaling(tau_smooth_pad, (py_cm, px_cm))
             # New scatter estimate (2.8.4a)
             I_s_new_pad = np.zeros_like(I_s_pad)
             

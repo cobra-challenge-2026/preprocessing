@@ -101,7 +101,19 @@ def read_dicom_image(image_path: str) -> sitk.Image:
     Reads a DICOM image series from the specified directory path.
     """
     reader = sitk.ImageSeriesReader()
-    dicom_names = reader.GetGDCMSeriesFileNames(image_path)
+    series_ids = reader.GetGDCMSeriesIDs(image_path)
+
+    # find series with most files
+    max_files = 0
+    longest_series = None
+    
+    for sid in series_ids:
+        filenames = reader.GetGDCMSeriesFileNames(image_path, sid)
+        if len(filenames) > max_files:
+            max_files = len(filenames)
+            longest_series = sid
+    
+    dicom_names = reader.GetGDCMSeriesFileNames(image_path, longest_series)
     if not dicom_names:
         logger.error(f"No DICOM series found in directory: {image_path}")
         raise FileNotFoundError(f"No DICOM series found in directory: {image_path}")
@@ -130,8 +142,10 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
             image = sitk.Cast(image,sitk.sitkFloat32)
         elif dtype == 'int16':
             image = sitk.Cast(image,sitk.sitkInt16)
+        elif dtype == 'uint16':
+            image = sitk.Cast(image,sitk.sitkUInt16)
         else:
-            raise ValueError('Invalid dtype/not implemented. Allowed dtypes: float32 and int16')
+            raise ValueError('Invalid dtype/not implemented. Allowed dtypes: float32, int16 and uint16')
     
     if not os.path.exists(os.path.dirname(image_path)):
         os.makedirs(os.path.dirname(image_path))
