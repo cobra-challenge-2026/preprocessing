@@ -39,18 +39,18 @@ The `settings` section contains various preprocessing options. The following key
 
 ```yaml
 A001:
-    data:
-        projections: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632
-        clinical_recon: /data/LMU/patientLMU007/IMAGES/recon.SCAN
-        ct: /data/LMU/patientLMU007/CT_SET/2.16.840.1.114337.1.1.1524060727.0
-        output: /data/LMU/patientLMU007/output
-        framesxml: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632/_Frames.xml
-        reconstruction_dir: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632/Reconstruction
-    general:
-        center: A
-        vendor: Elekta
-    settings:
-        correct_orientation: true
+  data:
+    projections: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632
+    clinical_recon: /data/LMU/patientLMU007/IMAGES/recon.SCAN
+    ct: /data/LMU/patientLMU007/CT_SET/2.16.840.1.114337.1.1.1524060727.0
+    output: /data/LMU/patientLMU007/output
+    framesxml: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632/_Frames.xml
+    reconstruction_dir: /data/LMU/patientLMU007/IMAGES/img_1.3.46.423632/Reconstruction
+  general:
+    center: A
+    vendor: Elekta
+  settings:
+    correct_orientation: true
 ```
 
 ### Varian:
