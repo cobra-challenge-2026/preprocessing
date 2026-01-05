@@ -2,9 +2,11 @@ services:
   cobra:
     container_name: cobra_preprocessing
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
     volumes:
       - /project_data_2/cbct/COBRA/code/preprocessing:/code
+      # change this to your data storage location
       - /project_data_2/cbct/COBRA/data:/data
     command: tail -F anything
     shm_size: '20g'
