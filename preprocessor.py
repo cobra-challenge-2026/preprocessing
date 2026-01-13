@@ -64,15 +64,15 @@ class PreProcessor:
     ### main preprocessing function for stage1 ###
     def run_stage1(self):
         self.logger.info("Starting preprocessing...")
-        # if self.patient_complete():
-        #     self.logger.info("All preprocessing files already exist. Skipping patient...")
-        # else:
-        self.load_data()
-        self.recon_cbct()
-        self.extract_metadata()
-        self.generate_overview()
-        self.write_data()
-        self.logger.info("Preprocessing completed.")
+        if self.patient_complete():
+            self.logger.info("All preprocessing files already exist. Skipping patient...")
+        else:
+            self.load_data()
+            self.recon_cbct()
+            self.extract_metadata()
+            self.generate_overview()
+            self.write_data()
+            self.logger.info("Preprocessing completed.")
 
     ### individual preprocessing steps ###
     
@@ -244,7 +244,8 @@ class PreProcessor:
         io.save_image(self.cbct_rtk, self.cbct_rtk_path(), dtype='int16')
         io.save_image(self.ct, self.ct_path(), dtype='int16')
         io.save_image(self.cbct_clinical, self.cbct_clinical_path(), dtype='int16')
-        yaml.dump(self.reconstruction_ini, open(self.reconstruction_ini_path(), 'w'))
+        if self.config.general.vendor.lower() == 'elekta':
+            yaml.dump(self.reconstruction_ini, open(self.reconstruction_ini_path(), 'w'))
         yaml.dump(self.metadata, open(self.metadata_path(), 'w'))
         if self.config.general.vendor.lower() == 'varian':
             io.copy_calibration_dir(
@@ -261,6 +262,8 @@ class PreProcessor:
             self.cbct_geometry_path(),
             self.cbct_rtk_path(),
             self.cbct_clinical_path(),
+            self.cbct_projections_path(),
+            self.metadata_path(),
         ]
         return all(os.path.isfile(f) for f in files_to_check)
 
