@@ -123,9 +123,9 @@ def generate_overview(
     ax[1,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,:,slice_sag], cmap='gray', vmin=background_rtk, vmax=high_rtk)
 
     # Row 2 (Coronal)
-    ax[2,0].imshow(sitk.GetArrayFromImage(ct)[:,slice_cor,:], cmap='gray', vmin=background_ct, vmax=high_ct)
-    ax[2,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[:,slice_cor,:], cmap='gray', vmin=background_clinical, vmax=high_clinical)
-    ax[2,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[:,slice_cor,:], cmap='gray', vmin=background_rtk, vmax=high_rtk)
+    ax[2,0].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:], cmap='gray', vmin=background_ct, vmax=high_ct)
+    ax[2,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[::-1,slice_cor,:], cmap='gray', vmin=background_clinical, vmax=high_clinical)
+    ax[2,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,slice_cor,:], cmap='gray', vmin=background_rtk, vmax=high_rtk)
 
     fig.subplots_adjust(wspace=0.02, hspace=0.02)
 
