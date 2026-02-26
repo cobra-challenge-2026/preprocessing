@@ -12,6 +12,7 @@ import utils.scatter_corrector as sc
 import utils.img as img
 import utils.vis as vis
 import utils.reg as reg
+import utils.seg as seg
 
 import yaml
 import copy
@@ -33,8 +34,10 @@ class PreProcessor:
         self.cbct_clinical: Optional[sitk.Image] = None
         self.cbct_rtk: Optional[sitk.Image] = None
         self.ct: Optional[sitk.Image] = None
+        self.ct_def: Optional[sitk.Image] = None
         self.metadata: dict = {}
         self.reconstruction_ini: dict = {}
+        self.fov_cbct: Optional[sitk.Image] = None
     
     ### define filenames for preprocessing files ###
     def cbct_projections_path(self) -> str:
@@ -60,6 +63,12 @@ class PreProcessor:
     
     def overview_path(self) -> str:
         return os.path.join(self.config.data.output, f'overview_{self.id}.png')
+    
+    def fov_cbct_path(self) -> str:
+        return os.path.join(self.config.data.output, f'fov_cbct.mha')
+    
+    def ct_def_path(self) -> str:
+        return os.path.join(self.config.data.output, f'ct_def.mha')
 
     ### main preprocessing function for stage1 ###
     def run_stage1(self):
@@ -73,6 +82,22 @@ class PreProcessor:
             self.generate_overview()
             self.write_data()
             self.logger.info("Preprocessing completed.")
+    
+    def run_stage2(self):
+        self.logger.info("Starting stage 2 preprocessing...")
+        # if self.patient_complete():
+        #     self.logger.info("All preprocessing files already exist. Skipping patient...")
+        # else:
+        #     if self.cbct_rtk is None or self.cbct_clinical is None:
+        #         self.logger.error("CBCT or clinical reconstruction not available for stage 2.")
+        #         return
+        self.logger.info("Performing deformable registration...")
+        self.load_data_s2()
+        self.run_deformable()
+        self.logger.info("Postprocessing deformed CT...")
+        self.postprocess_deformed()
+        self.write_data_s2()
+        self.logger.info("Stage 2 preprocessing completed.")
 
     ### individual preprocessing steps ###
     
@@ -121,14 +146,23 @@ class PreProcessor:
                     scattercorxml_path = self.config.data.scattercorxml,
                     airscans_path = self.config.data.airscans
                     )
-            self.logger.info("Correcting I0...")
-            self.cbct_projections_cor = recon.correct_i0_varian(
-                projections = self.cbct_projections, 
-                projections_header = header,
-                air_scans_dir = self.config.data.airscans,
-                geometry = self.cbct_geometry,
-                scan_xml_path= self.config.data.scanxml,
-                )
+                self.logger.info("Correcting I0...")
+                self.cbct_projections_cor = recon.correct_i0_varian(
+                    projections = self.cbct_projections_cor, 
+                    projections_header = header,
+                    air_scans_dir = self.config.data.airscans,
+                    geometry = self.cbct_geometry,
+                    scan_xml_path= self.config.data.scanxml,
+                    )
+            else:
+                self.logger.info("Correcting I0...")
+                self.cbct_projections_cor = recon.correct_i0_varian(
+                    projections = self.cbct_projections, 
+                    projections_header = header,
+                    air_scans_dir = self.config.data.airscans,
+                    geometry = self.cbct_geometry,
+                    scan_xml_path= self.config.data.scanxml,
+                    )
             self.cbct_clinical = io.read_image(self.config.data.clinical_recon)
         
         else:
@@ -175,9 +209,9 @@ class PreProcessor:
                 projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
                 gpu = True,
-                padding = 0.2,
-                hann = 0.,
-                hannY = 0,
+                padding = 0.5,
+                hann = 0.5,
+                hannY = 0.5,
             )
             self.cbct_rtk = img.fix_array_order(self.cbct_rtk, order=(1,0,2), flip=(0,1))
             translation = reg.rigid_registration(
@@ -266,9 +300,53 @@ class PreProcessor:
             self.metadata_path(),
         ]
         return all(os.path.isfile(f) for f in files_to_check)
-
-
+    
+    ### --- Load data from stage 1 --- ###
+    def load_data_s2(self):
+        self.logger.info("Loading data for stage 2...")
+        self.ct = io.read_image(self.ct_path())
+        self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.logger.info("Data for stage 2 loaded.")
+    
+    def run_deformable(self):
+        self.logger.info("Running deformable registration...")
         
+        ct_rigid,_ = reg.rigid_elastix(
+                        fixed = self.cbct_clinical,
+                        moving = self.ct,
+                        parameter_file='/code/configs/rigid_params.txt',
+                        default_value=-1024
+                    )
+
+        self.ct_def,_ = reg.run_deformable(
+            fixed = self.cbct_clinical,
+            moving = ct_rigid,
+            mind_r_c = 3,
+            mind_d_c = 4,
+            mind_r_a = 3,
+            mind_d_a = 4,
+            disp_hw = 6,
+            grid_sp = 5,
+            grid_sp_adam = 2,
+            selected_smooth = 0,
+            selected_niter = 80,
+            lambda_weight = 1.6,
+            sigma = 1,
+            background_value = -1024
+        )
+        self.logger.info("Deformable registration completed.")
+    
+    def postprocess_deformed(self):
+        self.logger.info("Postprocessing deformed CT...")
+        self.fov_cbct = seg.elekta_fov(self.cbct_clinical, threshold=-1024)
+        self.ct_def = img.mask_image(self.ct_def, self.fov_cbct, mask_value=-1024)
+        self.logger.info("Postprocessing completed.")
+
+    def write_data_s2(self):
+        self.logger.info("Saving preprocessed data to files...")
+        io.save_image(self.ct_def, self.ct_def_path(), dtype='int16')
+        io.save_image(self.fov_cbct, self.fov_cbct_path(), dtype='uint16')
+        self.logger.info("Preprocessed data saved.")
         
         
         
