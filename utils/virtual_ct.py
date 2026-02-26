@@ -89,7 +89,7 @@ class VirtualCTCreator:
         dilated = sitk.BinaryDilate(mismatch_image, [dilate_radius] * 3)
 
         blend_mask = sitk.Cast(dilated, sitk.sitkFloat32)
-        blend_mask = sitk.SmoothingRecursiveGaussian(blend_mask, self.blend_margin_mm)
+        blend_mask = sitk.SmoothingRecursiveGaussian(blend_mask, self.blend_margin_mm/2)
         blend_mask_arr = np.clip(sitk.GetArrayFromImage(blend_mask), 0, 1)
 
         blend_mask_arr = blend_mask_arr * body_region_arr
