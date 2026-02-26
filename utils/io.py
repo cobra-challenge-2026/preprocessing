@@ -189,7 +189,7 @@ def read_ini_files(reconstruction_dir: str, sections = ['RECONSTRUCTION', 'ALIGN
 
     for ini_file in ini_files:
         parser = cpars.ConfigParser()
-        parser.read(os.path.join(reconstruction_dir, ini_file))
+        parser.read(os.path.join(reconstruction_dir, ini_file), encoding='latin-1')
         
         for section in sections:
             if section not in parser.sections():
