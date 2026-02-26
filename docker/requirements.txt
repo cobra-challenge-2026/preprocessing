@@ -1,7 +1,7 @@
 numpy
 matplotlib
 scipy
-SimpleITK
+simpleitk-simpleelastix>=2.5.0.dev49
 convexAdam
 TotalSegmentator
 ipykernel
