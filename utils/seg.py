@@ -14,6 +14,18 @@ import utils.reg as reg
 
 logger = logging.getLogger(__name__)
 
+def elekta_fov(input: sitk.Image, threshold: float = -1024)->sitk.Image:
+    """
+    Estimates the CBCT field of view (FOV) by thresholding.
+    Only works for Elekta CBCTs where the FOV is clearly distinguishable from the background.
+    """
+    cbct_fov = sitk.Threshold(input, lower=threshold-1, upper=threshold, outsideValue=0)
+    cbct_fov[cbct_fov == 0] = 1
+    cbct_fov[cbct_fov != 1] = 0
+    cbct_fov = sitk.Cast(cbct_fov, sitk.sitkUInt8)
+    cbct_fov = sitk.VotingBinaryIterativeHoleFilling(cbct_fov)
+    return cbct_fov
+
 def segment_skin(input:Optional[sitk.Image], modality:str = 'CT', **kwargs)->sitk.Image:
     """
     Segment the skin from the input image using TotalSegmentator.

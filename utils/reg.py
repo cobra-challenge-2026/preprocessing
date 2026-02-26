@@ -19,9 +19,11 @@ def rigid_registration(
     fixed: sitk.Image,
     moving: sitk.Image,
     translation_only: bool = True
-) -> sitk.Image:
+) -> sitk.Transform:
     """
     Perform translation/rigid registration between fixed and moving images using SimpleITK.
+    Only returns the final transform, does not apply it to the moving image. 
+    If translation_only is True, only translation parameters are optimized.
     """
     fixed = sitk.Cast(fixed, sitk.sitkFloat32)
     moving = sitk.Cast(moving, sitk.sitkFloat32)
@@ -80,7 +82,6 @@ def shift_origin(
 
     image.SetOrigin(new_origin)
     return image
-
 
 def run_deformable(
     fixed: sitk.Image | None = None,
@@ -192,6 +193,122 @@ def run_deformable(
 
     return deformed_sitk, disp_field_sitk
 
+import SimpleITK as sitk
+import os
+import tempfile
+import shutil
+import numpy as np
+from typing import Union, Tuple
+
+# def rigid_registration(
+#     fixed: sitk.Image,
+#     moving: sitk.Image,
+# ) -> sitk.Transform:
+#     """
+#     Perform translation/rigid registration between fixed and moving images using SimpleITK.
+#     """
+#     # we run the registration cbct to ct and then apply the inverse to transform the ct to cbct space.
+#     fixed = sitk.Cast(fixed, sitk.sitkFloat32)
+#     moving = sitk.Cast(moving, sitk.sitkFloat32)
+#     transform = sitk.Euler3DTransform()
+
+#     initial_transform = sitk.CenteredTransformInitializer(
+#         moving,
+#         fixed,
+#         transform,
+#         sitk.CenteredTransformInitializerFilter.GEOMETRY
+#     )
+
+#     R = sitk.ImageRegistrationMethod()
+#     R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=100)
+#     R.SetMetricSamplingStrategy(R.RANDOM)
+#     R.SetMetricSamplingPercentage(0.01) 
+#     R.SetInterpolator(sitk.sitkLinear)
+#     R.SetOptimizerAsGradientDescent(
+#         learningRate=1,
+#         numberOfIterations=100,
+#         convergenceMinimumValue=1e-6,
+#         convergenceWindowSize=10
+#     )
+
+#     R.SetOptimizerScalesFromPhysicalShift() 
+#     R.SetShrinkFactorsPerLevel([4, 2, 1])
+#     R.SetSmoothingSigmasPerLevel([2, 1, 0])
+#     R.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+#     R.SetInitialTransform(initial_transform, inPlace=False)
+
+#     final_transform = R.Execute(moving, fixed)
+#     inverse = final_transform.GetInverse()
+#     image_rigid = sitk.Resample(moving, fixed, inverse, sitk.sitkLinear, -1024, moving.GetPixelID())
+    
+#     return image_rigid, inverse
+
+def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None, default_value = 0,log=False)->Union[sitk.Image,sitk.Transform]:
+    """
+    Perform rigid registration between a fixed image and a moving image using the given parameter file.
+
+    Parameters:
+    fixed (sitk.Image): The fixed image to register.
+    moving (sitk.Image): The moving image to register.
+    parameter_file (str): The path to the parameter file for the registration.
+    mask (sitk.Image, optional): The mask image to be used during registration. Defaults to None.
+    default_value (float, optional): The default pixel value for the resampled image. Defaults to 0.
+    log (bool, optional): Whether to log the registration process. Defaults to False.
+
+    Returns:
+    Tuple[sitk.Image, sitk.Transform]: A tuple containing the registered image and the inverse transform.
+
+    """
+    temp_dir = tempfile.mkdtemp()
+    current_directory = os.getcwd()
+    os.chdir(temp_dir)
+    
+    parameter = sitk.ReadParameterFile(parameter_file)
+    
+    # Perform registration based on parameter file
+    elastixImageFilter = sitk.ElastixImageFilter()
+    elastixImageFilter.SetParameterMap(parameter)
+    elastixImageFilter.SetFixedImage(moving)  # due to FOV differences CT first registered to MR an inverted in the end
+    elastixImageFilter.SetMovingImage(fixed)
+    if mask != None:
+        elastixImageFilter.SetFixedMask(mask)
+    elastixImageFilter.LogToConsoleOn()
+    elastixImageFilter.LogToFileOff()
+    elastixImageFilter.SetNumberOfThreads(16)
+    elastixImageFilter.Execute()
+    elastixImageFilter.SetOutputDirectory(temp_dir)
+
+    # convert to itk transform format
+    transform = elastixImageFilter.GetTransformParameterMap(0)
+    x = transform.values()
+    center = np.array((x[0])).astype(np.float64)
+    rigid = np.array((x[22])).astype(np.float64)
+    transform_itk = sitk.Euler3DTransform()
+    transform_itk.SetParameters(rigid)
+    transform_itk.SetCenter(center)
+    transform_itk.SetComputeZYX(False)
+
+    # save itk transform to correct MR mask later
+    #transform_itk.WriteTransform(output)
+    #transform_itk.WriteTransform(str('registration_parameters.txt'))
+
+    ##invert transform to get MR registered to CT
+    inverse_transform = transform_itk.GetInverse()
+
+    ##transform moving image
+    resample = sitk.ResampleImageFilter()
+    resample.SetReferenceImage(fixed)
+    resample.SetTransform(inverse_transform)
+    resample.SetInterpolator(sitk.sitkLinear)
+    resample.SetDefaultPixelValue(float(default_value))
+    registered_image = resample.Execute(moving)
+    os.chdir(current_directory)
+    shutil.rmtree(temp_dir)
+    if log != False:
+        log.info(f'Rigid registration performed using parameter file {parameter_file}')
+    
+    return registered_image,inverse_transform
+
 def warp_structure(structure:Optional[sitk.Image], disp_field:sitk.Image, interpolator = sitk.sitkNearestNeighbor)->sitk.Image:
     """
     Warp a structure image using the provided displacement field.
@@ -221,8 +338,9 @@ def apply_convex(
 
     d1, d2, d3, _ = disp.shape
     identity = np.meshgrid(np.arange(d1), np.arange(d2), np.arange(d3), indexing='ij')
-    warped_image = map_coordinates(moving, disp.transpose(3, 0, 1, 2) + identity, order=1, cval=background_value)
+    warped_image = map_coordinates(moving, disp.transpose(3, 0, 1, 2) + identity, order=1, cval=background_value, mode='constant')
     return warped_image
+
 
 def invert_displacement_field(disp_field: sitk.Image) -> sitk.Image:
     """

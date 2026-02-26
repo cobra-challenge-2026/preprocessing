@@ -253,21 +253,19 @@ def extract_varian_metadata(tags_yaml:str, scan_xml: str, projections: sitk.Imag
         
     return metadata_dict
 
-
+def mask_image(image: Optional[sitk.Image], mask: Optional[sitk.Image], mask_value=-1024) -> sitk.Image:
+    """
+    Masks the input image using the provided mask image.
+    """
+    mask = sitk.Cast(mask, sitk.sitkUInt8)
+    masked_image = sitk.Mask(image, mask, outsideValue=mask_value)
+    return masked_image
 
 # def clip_image(image: sitk.Image, lower_bound: float, upper_bound: float) -> sitk.Image:
 #     """Clips an image using SimpleITK."""
 #     logger.info(f'Clipping image between {lower_bound} and {upper_bound}')
 #     image = sitk.Clamp(image, lowerBound=lower_bound, upperBound=upper_bound)
 #     return image
-
-# def mask_image(image: Optional[sitk.Image], mask: Optional[sitk.Image], mask_value=-1024) -> sitk.Image:
-#     """
-#     Masks the input image using the provided mask image.
-#     """
-#     mask = sitk.Cast(mask, sitk.sitkUInt8)
-#     masked_image = sitk.Mask(image, mask, outsideValue=mask_value)
-#     return masked_image
 
 # def resample_reference(image: sitk.Image, ref_image: sitk.Image, default_value=0, interpolator=sitk.sitkLinear) -> sitk.Image:
 #     """
