@@ -50,6 +50,8 @@ RUN git clone https://github.com/vboussot/ImpactLoss.git /ImpactLoss
 RUN bash /ImpactLoss/Data/Models/download_models.sh
 
 WORKDIR /app
-COPY server.py /app/server.py
 RUN pip install fastapi uvicorn
+
+RUN mkdir -p /Data/Models/TS
+COPY docker/impact_docker/M730_2_Layers.pt /Data/Models/TS/
 

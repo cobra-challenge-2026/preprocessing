@@ -1,6 +1,11 @@
-import SimpleITK as sitk
-import numpy as np
+import os
+import tempfile
+import shutil
 import logging
+import requests
+
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,6 +17,8 @@ from convexAdam.convex_adam_utils import validate_image
 
 import utils.io as io
 import utils.img as img
+
+import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
@@ -193,56 +200,6 @@ def run_deformable(
 
     return deformed_sitk, disp_field_sitk
 
-import SimpleITK as sitk
-import os
-import tempfile
-import shutil
-import numpy as np
-from typing import Union, Tuple
-
-# def rigid_registration(
-#     fixed: sitk.Image,
-#     moving: sitk.Image,
-# ) -> sitk.Transform:
-#     """
-#     Perform translation/rigid registration between fixed and moving images using SimpleITK.
-#     """
-#     # we run the registration cbct to ct and then apply the inverse to transform the ct to cbct space.
-#     fixed = sitk.Cast(fixed, sitk.sitkFloat32)
-#     moving = sitk.Cast(moving, sitk.sitkFloat32)
-#     transform = sitk.Euler3DTransform()
-
-#     initial_transform = sitk.CenteredTransformInitializer(
-#         moving,
-#         fixed,
-#         transform,
-#         sitk.CenteredTransformInitializerFilter.GEOMETRY
-#     )
-
-#     R = sitk.ImageRegistrationMethod()
-#     R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=100)
-#     R.SetMetricSamplingStrategy(R.RANDOM)
-#     R.SetMetricSamplingPercentage(0.01) 
-#     R.SetInterpolator(sitk.sitkLinear)
-#     R.SetOptimizerAsGradientDescent(
-#         learningRate=1,
-#         numberOfIterations=100,
-#         convergenceMinimumValue=1e-6,
-#         convergenceWindowSize=10
-#     )
-
-#     R.SetOptimizerScalesFromPhysicalShift() 
-#     R.SetShrinkFactorsPerLevel([4, 2, 1])
-#     R.SetSmoothingSigmasPerLevel([2, 1, 0])
-#     R.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-#     R.SetInitialTransform(initial_transform, inPlace=False)
-
-#     final_transform = R.Execute(moving, fixed)
-#     inverse = final_transform.GetInverse()
-#     image_rigid = sitk.Resample(moving, fixed, inverse, sitk.sitkLinear, -1024, moving.GetPixelID())
-    
-#     return image_rigid, inverse
-
 def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None, default_value = 0,log=False)->Union[sitk.Image,sitk.Transform]:
     """
     Perform rigid registration between a fixed image and a moving image using the given parameter file.
@@ -308,6 +265,43 @@ def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None
         log.info(f'Rigid registration performed using parameter file {parameter_file}')
     
     return registered_image,inverse_transform
+
+def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
+    """
+    Perform a deformable image registration using Elastix with the IMPACT loss function.
+    This function provides calls Elastix running in the IMPACT container via an API.
+    
+    Parameters:
+    fixed (sitk.Image): The fixed image to register.
+    moving (sitk.Image): The moving image to register.
+    parameter_file (str): The path to the parameter file for the registration.
+    Returns:
+    Tuple[sitk.Image, sitk.Image]: A tuple containing the registered image and the displacement field.
+    """
+    with tempfile.TemporaryDirectory(prefix = "impact", dir = output_dir) as temp_dir:
+        fixed_path = os.path.join(temp_dir, "fixed.mha")
+        moving_path = os.path.join(temp_dir, "moving.mha")
+
+        sitk.WriteImage(fixed, fixed_path)
+        sitk.WriteImage(moving, moving_path)
+
+        print("Saved fixed and moving images to %s", temp_dir)
+        
+        response = requests.post(
+            "http://impact:8000/run-registration",
+            params={
+                "fixed_path": fixed_path,
+                "moving_path": moving_path,
+                "output_dir": temp_dir
+            }
+        )
+        
+        print(f"{response.status_code} - {response.text}")
+        
+        params = sitk.ReadParameterFile(os.path.join(temp_dir, "TransformParameters.0.txt"))
+        deformed = sitk.Transformix(moving, params)
+        
+        return deformed, params
 
 def warp_structure(structure:Optional[sitk.Image], disp_field:sitk.Image, interpolator = sitk.sitkNearestNeighbor)->sitk.Image:
     """

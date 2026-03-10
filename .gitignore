@@ -6,3 +6,4 @@ configs/*_config.yaml
 *.npy
 scattercor_code
 docker/Dockerfile_RTK_124
+*.log
