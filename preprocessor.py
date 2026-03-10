@@ -318,22 +318,12 @@ class PreProcessor:
                         default_value=-1024
                     )
 
-        self.ct_def,_ = reg.run_deformable(
-            fixed = self.cbct_clinical,
-            moving = ct_rigid,
-            mind_r_c = 3,
-            mind_d_c = 4,
-            mind_r_a = 3,
-            mind_d_a = 4,
-            disp_hw = 6,
-            grid_sp = 5,
-            grid_sp_adam = 2,
-            selected_smooth = 0,
-            selected_niter = 80,
-            lambda_weight = 1.6,
-            sigma = 1,
-            background_value = -1024
-        )
+        self.ct_def, _ = reg.deformable_impact(
+                        fixed = self.cbct_clinical,
+                        moving = ct_rigid,
+                        output_dir = self.config.data.output
+                    )
+        
         self.logger.info("Deformable registration completed.")
     
     def postprocess_deformed(self):
