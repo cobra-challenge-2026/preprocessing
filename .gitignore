@@ -10,3 +10,4 @@ docker/Dockerfile_RTK_124
 configs/generate_umcu_config.py
 *.tar
 */checkpoint
+configs/umcu_config_s2.yaml
