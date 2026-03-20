@@ -264,7 +264,7 @@ def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None
     if log != False:
         log.info(f'Rigid registration performed using parameter file {parameter_file}')
     
-    return registered_image,inverse_transform
+    return registered_image, inverse_transform
 
 def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
     """
@@ -278,7 +278,7 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
     Returns:
     Tuple[sitk.Image, sitk.Image]: A tuple containing the registered image and the displacement field.
     """
-    with tempfile.TemporaryDirectory(prefix = "impact", dir = output_dir) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix = "impact_", dir = output_dir) as temp_dir:
         fixed_path = os.path.join(temp_dir, "fixed.mha")
         moving_path = os.path.join(temp_dir, "moving.mha")
 
@@ -299,9 +299,35 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
         print(f"{response.status_code} - {response.text}")
         
         params = sitk.ReadParameterFile(os.path.join(temp_dir, "TransformParameters.0.txt"))
-        deformed = sitk.Transformix(moving, params)
         
-        return deformed, params
+        deformer = sitk.TransformixImageFilter()
+        deformer.SetTransformParameterMap(params)
+        deformer.ComputeDeformationFieldOn()
+        deformer.SetOutputDirectory(temp_dir)
+        deformer.SetMovingImage(moving)
+
+        deformed = deformer.Execute()
+        
+        dvf = sitk.ReadImage(os.path.join(temp_dir, "deformationField.mha"))
+        
+        return deformed, params, dvf
+
+def apply_transforms(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.Image, default_value = -1024)->sitk.Image:
+    """ 
+    Apply rigid and deformable registratio while keeping the FOV of original CT 
+    Parameters:
+    ct (sitk.Image): The original CT image to be transformed.
+    rigid_transform (sitk.Transform): The rigid transform to be applied to the CT image.
+    dvf (sitk.Image): The deformation vector field to be applied after the rigid transform.
+    default_value (float, optional): The default pixel value for areas outside the original FOV after transformation. Defaults to -1024.
+    """
+    ct_rigid = sitk.Resample(ct, ct, rigid_transform, sitk.sitkLinear, default_value)    
+    dvf = sitk.Resample(dvf, ct)
+    dvf = sitk.Cast(dvf, sitk.sitkVectorFloat64)
+    transform_def = sitk.DisplacementFieldTransform(dvf)
+    ct_deformed = sitk.Resample(ct_rigid, ct_rigid, transform_def, sitk.sitkLinear, default_value)
+    
+    return ct_deformed
 
 def warp_structure(structure:Optional[sitk.Image], disp_field:sitk.Image, interpolator = sitk.sitkNearestNeighbor)->sitk.Image:
     """

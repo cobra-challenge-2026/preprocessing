@@ -2,12 +2,14 @@ from totalsegmentator.python_api import totalsegmentator
 import SimpleITK as sitk
 import logging
 import os
+from utils import img
 import utils.io as io
 import xmltodict
 from typing import Optional, Union
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from scipy import ndimage
 import numpy as np
+import utils.sct_generator as sct_gen
 
 
 import utils.reg as reg
@@ -54,6 +56,23 @@ def segment_skin(input:Optional[sitk.Image], modality:str = 'CT', **kwargs)->sit
     logger.info('Skin segmentation completed.')
 
     return skin
+
+def segment_lung(input:Optional[sitk.Image], **kwargs)->sitk.Image:
+
+    logger.info('Starting lung segmentation using TotalSegmentator...')
+    lung_rois = [
+        "lung_upper_lobe_left",
+        "lung_lower_lobe_left",
+        "lung_upper_lobe_right",
+        "lung_middle_lobe_right",
+        "lung_lower_lobe_right",
+    ]
+    input_nib = io.sitk_to_nib(input)
+    ts_output = totalsegmentator(input_nib,output=None,task='total', roi_subset=lung_rois, quiet=True, device= 'gpu:0')
+    header = ts_output.header.extensions[0].get_content() # type: ignore
+    header = xmltodict.parse(header)
+    structures = io.nib_to_sitk(ts_output) 
+    return structures, header
 
 def segment_OAR_structures(input:Optional[sitk.Image], modality:str = 'CT', **kwargs) -> tuple[sitk.Image, dict]:
     """
@@ -221,86 +240,76 @@ def segment_outline(input:sitk.Image,threshold:float=0.30,log=False)->sitk.Image
     
     return mask_filled
 
-def segment_outline_improved(input: sitk.Image, 
-                             threshold: float = 0.30, 
-                             log=False) -> sitk.Image:
-    """
-    Segment the outline of a given input CBCT image with pre-smoothing and robust morphology.
-
-    Parameters:
-    input (sitk.Image): The input image to segment.
-    threshold (float): A relative threshold value for segmentation. Default is 0.30.
-
-    Returns:
-    sitk.Image: The segmented outline image.
-    """
-    input_float = sitk.Cast(input, sitk.sitkFloat32)
+def remove_small_objects(mask, min_size=1000):
+    """Remove connected components smaller than min_size"""
+    cc = sitk.ConnectedComponent(mask)
+    stats = sitk.LabelShapeStatisticsImageFilter()
+    stats.Execute(cc)
+    output_mask = sitk.Image(mask.GetSize(), sitk.sitkUInt8)
+    output_mask.CopyInformation(mask)
+    for label in stats.GetLabels():
+        if stats.GetPhysicalSize(label) >= min_size:
+            output_mask = output_mask | (cc == label)
+    return output_mask
     
-    # --- 1. Pre-processing: Denoise the image FIRST ---
-    # This is the most important step for noisy CBCTs.
-    # CurvatureAnisotropicDiffusion is excellent at smoothing while preserving edges.
-    smoothed_image = sitk.CurvatureAnisotropicDiffusion(
-        input_float,
-        timeStep=0.0625,
-        conductanceParameter=9.0,
-        numberOfIterations=5 # You can tune this parameter
+def segment_cbct_ac(cbct, sct, fov_mask = None):
+    if fov_mask is None:
+        cbct_fov = elekta_fov(cbct)
+    else:
+        cbct_fov = fov_mask
+    cbct = img.mask_image(sct, cbct_fov)
+    cbct_outline = segment_outline(cbct, 0.5)
+    cbct_ac = segment_cbct_ac_helper(sct, cbct_outline)
+    cbct_ac = sitk.Cast(cbct_ac, sitk.sitkUInt8)
+    return cbct_ac
+
+def generate_sct(cbct, device='cuda:0'):
+    sct_generator = sct_gen.StandaloneRegressionInference(
+    model_path = '/code/configs/checkpoint',
+    device = device,
     )
-    
-    # 1. Get the intensity range of interest, just like you already do
-    input_np = sitk.GetArrayFromImage(smoothed_image)
-    background = np.percentile(input_np, 2.5)
-    high = np.percentile(input_np, 97.5)
-
-    # 2. Create a "region of interest" (ROI) mask in SimpleITK
-    # This mask includes only the "interesting" pixels, excluding 
-    # extreme air and extreme artifacts.
-    roi_mask = sitk.And(smoothed_image > background, smoothed_image < high)
-
-    # 3. Calculate Otsu threshold *only* within the ROI mask
-    # We tell Otsu to only look at pixels where roi_mask is 1
-    dynamic_threshold_value = sitk.OtsuThreshold(
-        smoothed_image, 
-        roi_mask,
-        1
+    cbct_np = sitk.GetArrayFromImage(cbct).astype(np.float32)
+    cbct_cor_np = sct_generator.predict(
+        input_array = cbct_np,
+        apply_normalization=True,
+        apply_denormalization=True
     )
+    cbct_cor_sitk = sitk.GetImageFromArray(cbct_cor_np)
+    cbct_cor_sitk.CopyInformation(cbct)
+    cbct_cor_sitk = sitk.Cast(cbct_cor_sitk, sitk.sitkInt16)
+    return cbct_cor_sitk
 
-    # 4. Apply the dynamic threshold
-    mask = smoothed_image > dynamic_threshold_value
+def segment_ct_ac(ct, ):
+    ct_lung,_ = segment_lung(ct)
+    ct_lung = ct_lung > 0
+    threshold_air_ct = -250
+    volume_threshold = 20
 
-    # --- 3. Morphological Cleaning ---
-    # Use the kernel size from your original code, but apply Open -> Close
-    # For a more robust solution, use physical units (see suggestion #3)
-    kernel_radius_pixels = (8, 8, 8) 
+    ct_body.SetOrigin(ct.GetOrigin())
+    ct_lung.SetOrigin(ct.GetOrigin())
+    ct_body = sitk.Cast(ct_body, sitk.sitkUInt8)
+    ct_body_eroded = sitk.BinaryErode(ct_body, (2, 2, 0))
+    ct_lung = sitk.Cast(ct_lung, sitk.sitkUInt8)
+
+    air_cavities_ct = ct < threshold_air_ct 
+    air_cavities_ct = air_cavities_ct & ct_body_eroded & ~ct_lung
+    air_cavities_ct = remove_small_objects(air_cavities_ct, min_size=volume_threshold)
     
-    # 3a. Opening: Remove small noise speckles
-    mask = sitk.BinaryMorphologicalOpening(mask, kernel_radius_pixels)
-    
-    # 3b. Closing: Fill small gaps in the main body
-    mask = sitk.BinaryMorphologicalClosing(mask, kernel_radius_pixels)
+    return air_cavities_ct
 
-    # --- 4. Keep Largest Component ---
-    # This correctly removes disconnected noise/artifacts (e.g., treatment couch)
-    mask_cc = sitk.ConnectedComponent(mask)
-    sorted_component_image = sitk.RelabelComponent(mask_cc, sortByObjectSize=True)
-    largest_component_binary_image = sorted_component_image == 1
-    
-    # The 3D sitk.BinaryFillhole was redundant with the 2D loop, so it's removed.
-    
-    # --- 5. 2D Axial Hole Filling (Your robust final step) ---
-    mask_np = sitk.GetArrayFromImage(largest_component_binary_image)
-    mask_np_filled = np.zeros_like(mask_np)
+def segment_cbct_ac_helper(cbct, outline):
+    threshold_air_ct = -250
+    volume_threshold = 20
 
-    for i in range(mask_np.shape[0]):
-        # This fills internal holes (e.g., lungs, GI gas) slice by slice
-        mask_np_filled[i] = ndimage.binary_fill_holes(mask_np[i])
+    outline.SetOrigin(cbct.GetOrigin())
+    outline = sitk.Cast(outline, sitk.sitkUInt8)
+    outline = sitk.BinaryErode(outline, (3, 3, 0))
 
-    mask_filled = sitk.GetImageFromArray(mask_np_filled)
-    mask_filled.CopyInformation(input) # Copy metadata from the *original* input
-    mask_filled = sitk.Cast(mask_filled, sitk.sitkUInt8)
-
-    if log: # Use 'if log:' which is more Pythonic
-        # Use a real logger if available
-        # logger.info(f'Patient outline segmented using threshold {threshold}')
-        print(f'Patient outline segmented using threshold {threshold}')
+    air_cavities_ct = cbct < threshold_air_ct
+    air_cavities_ct = air_cavities_ct & outline
+    air_cavities_ct = remove_small_objects(air_cavities_ct, min_size=volume_threshold)
     
-    return mask_filled
+    return air_cavities_ct
+
+
+

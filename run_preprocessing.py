@@ -16,7 +16,6 @@ if __name__ == "__main__":
     parser.add_argument('-stage', '-s', type=int, default=1, help='Preprocessing stage to run (1 or 2). ')
     args = parser.parse_args()
     configs = load_patient_configs(args.config_file)
-    skip_existing = True
 
     for patient_id, config in configs.items():
         try:

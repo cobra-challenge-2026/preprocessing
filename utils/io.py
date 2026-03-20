@@ -144,6 +144,8 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
             image = sitk.Cast(image,sitk.sitkInt16)
         elif dtype == 'uint16':
             image = sitk.Cast(image,sitk.sitkUInt16)
+        elif dtype == 'vectorfloat32':
+            image = sitk.Cast(image,sitk.sitkVectorFloat32)
         else:
             raise ValueError('Invalid dtype/not implemented. Allowed dtypes: float32, int16 and uint16')
     

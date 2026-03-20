@@ -7,3 +7,6 @@ configs/*_config.yaml
 scattercor_code
 docker/Dockerfile_RTK_124
 *.log
+configs/generate_umcu_config.py
+*.tar
+*/checkpoint

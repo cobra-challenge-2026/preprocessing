@@ -3,6 +3,7 @@ import numpy as np
 from typing import Optional
 from pathlib import Path
 import sys
+from utils import seg
 
 class VirtualCTCreator:
     def __init__(
@@ -55,7 +56,8 @@ class VirtualCTCreator:
     def create(
         self,
         deformed_ct: sitk.Image,
-        cbct: sitk.Image
+        cbct: sitk.Image,
+        cbct_fov: Optional[sitk.Image] = None,
     ) -> sitk.Image:
         """Build a virtual CT by blending CT and CBCT in mismatch low-density regions."""
         deformed_ct_arr = sitk.GetArrayFromImage(deformed_ct)
@@ -67,24 +69,38 @@ class VirtualCTCreator:
 
         cbct_arr = sitk.GetArrayFromImage(cbct_for_blending)
 
+        # cbct and ct acmasks
+        cbct_acs = seg.segment_cbct_ac(cbct, cbct_for_blending, fov_mask = cbct_fov)
+        ct_body = seg.segment_skin(deformed_ct)
+        ct_acs = seg.segment_ct_ac(deformed_ct, ct_body)
+        
+        mismatch_image = cbct_acs != ct_acs
 
-        # Compute body masks for both CT and CBCT
-        body_mask_ct = deformed_ct_arr > self.body_threshold_hu
+        # # Compute body masks for both CT and CBCT
+        # body_mask_ct_sitk = seg.segment_skin(deformed_ct, threshold=self.body_threshold_hu)
+        # body_mask_ct_sitk = sitk.Cast(body_mask_ct_sitk, sitk.sitkUInt8)
+        # body_mask_ct_sitk.SetOrigin(deformed_ct.GetOrigin())
+        
+        # body_mask_cbct_sitk = seg.segment_outline(cbct, 0.5)
+        # body_mask_cbct_sitk = sitk.Cast(body_mask_cbct_sitk, sitk.sitkUInt8)
+        # body_mask_cbct_sitk = sitk.BinaryErode(body_mask_cbct_sitk, [2, 2, 0]) 
 
-        # Fill holes in the intersection mask (optional, for robustness)
-        body_mask_ct_sitk = sitk.GetImageFromArray(body_mask_ct.astype(np.uint8))
-        body_mask_ct_sitk.CopyInformation(cbct_for_blending)
-        body_filled_ct_sitk = sitk.BinaryFillhole(body_mask_ct_sitk)
-        body_filled_ct_sitk = sitk.BinaryErode(body_filled_ct_sitk, [5, 5, 0])
+        # # Fill holes in the intersection mask (optional, for robustness)
+        # #body_mask_ct_sitk = sitk.GetImageFromArray(body_mask_ct.astype(np.uint8))
+        # #body_mask_ct_sitk.CopyInformation(cbct_for_blending)
+        # #body_filled_ct_sitk = sitk.BinaryFillhole(body_mask_ct_sitk)
+        # #body_filled_ct_sitk = sitk.BinaryErode(body_filled_ct_sitk, [5, 5, 0])
 
-        body_region_arr = sitk.GetArrayFromImage(body_filled_ct_sitk) > 0
+        # body_region = body_mask_ct_sitk & body_mask_cbct_sitk
 
-        low_density_cbct = cbct_arr < self.air_threshold_hu
-        low_density_deformed = deformed_ct_arr < self.air_threshold_hu
-        mismatch_mask = (low_density_cbct != low_density_deformed) & body_region_arr
+        # body_region_arr = sitk.GetArrayFromImage(body_region)
 
-        mismatch_image = sitk.GetImageFromArray(mismatch_mask.astype(np.uint8))
-        mismatch_image.CopyInformation(cbct_for_blending)
+        # low_density_cbct = cbct_arr < self.air_threshold_hu
+        # low_density_deformed = deformed_ct_arr < self.air_threshold_hu
+        # mismatch_mask = (low_density_cbct != low_density_deformed) & body_region_arr
+        # mismatch_image = sitk.GetImageFromArray(mismatch_mask.astype(np.uint8))
+        # mismatch_image.CopyInformation(cbct_for_blending)
+       
         dilate_radius = int(self.blend_margin_mm / cbct_for_blending.GetSpacing()[0])
         dilated = sitk.BinaryDilate(mismatch_image, [dilate_radius] * 3)
 
@@ -92,7 +108,7 @@ class VirtualCTCreator:
         blend_mask = sitk.SmoothingRecursiveGaussian(blend_mask, self.blend_margin_mm/2)
         blend_mask_arr = np.clip(sitk.GetArrayFromImage(blend_mask), 0, 1)
 
-        blend_mask_arr = blend_mask_arr * body_region_arr
+        blend_mask_arr = blend_mask_arr * sitk.GetArrayFromImage(ct_body)
         virtual_ct_arr = (1 - blend_mask_arr) * deformed_ct_arr + blend_mask_arr * cbct_arr
 
         virtual_ct = sitk.GetImageFromArray(virtual_ct_arr.astype(np.int16))

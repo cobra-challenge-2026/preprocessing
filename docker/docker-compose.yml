@@ -17,7 +17,7 @@ services:
         reservations:
           devices:
           - driver: nvidia
-            device_ids: ['2']
+            count: all
             capabilities: [gpu]
   impact:
     container_name: impact_registration
@@ -39,5 +39,5 @@ services:
         reservations:
           devices:
           - driver: nvidia
-            device_ids: ['2']
+            count: all
             capabilities: [gpu]
