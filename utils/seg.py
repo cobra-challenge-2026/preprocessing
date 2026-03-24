@@ -28,6 +28,90 @@ def elekta_fov(input: sitk.Image, threshold: float = -1024)->sitk.Image:
     cbct_fov = sitk.VotingBinaryIterativeHoleFilling(cbct_fov)
     return cbct_fov
 
+def get_cbct_fov(image: sitk.Image, margin_mm: float = 2.0) -> sitk.Image:
+    """
+    Create a circular FOV mask for a CBCT image.
+    
+    The circle is centered in the XY plane with radius derived from the
+    image geometry. For edge slices where the FOV shrinks, it detects
+    the actual boundary per slice.
+    
+    Args:
+        image: Input CBCT volume (SimpleITK Image).
+        margin_mm: Shrink the radius by this amount (mm) to avoid
+                   partial-volume edge voxels. Typically 1-2 mm.
+    
+    Returns:
+        Binary SimpleITK Image (UInt8): 1 inside FOV, 0 outside.
+    """
+    size = image.GetSize()        # (x, y, z)
+    spacing = image.GetSpacing()  # (x, y, z)
+    origin = image.GetOrigin()    # (x, y, z)
+
+    center_x = origin[0] + (size[0] - 1) * spacing[0] / 2.0
+    center_y = origin[1] + (size[1] - 1) * spacing[1] / 2.0
+
+    extent_x = size[0] * spacing[0]
+    extent_y = size[1] * spacing[1]
+    default_radius = min(extent_x, extent_y) / 2 - margin_mm
+
+    arr = sitk.GetArrayFromImage(image)  # shape: (z, y, x)
+    n_slices = arr.shape[0]
+
+    radii = np.full(n_slices, default_radius)
+
+    n_check = min(60, n_slices // 2)
+    for s in list(range(n_check)) + list(range(n_slices - n_check, n_slices)):
+        r = _detect_slice_radius(arr[s], spacing, origin, center_x, center_y)
+        if r is not None and r < default_radius:
+            radii[s] = r - margin_mm
+
+    mask_arr = np.zeros_like(arr, dtype=np.uint8)
+
+    ix = np.arange(size[0])
+    iy = np.arange(size[1])
+    gx, gy = np.meshgrid(ix, iy)  # shape: (y, x)
+
+    px = origin[0] + gx * spacing[0]
+    py = origin[1] + gy * spacing[1]
+
+    dist_sq = (px - center_x) ** 2 + (py - center_y) ** 2
+
+    for s in range(n_slices):
+        mask_arr[s] = (dist_sq <= radii[s] ** 2).astype(np.uint8)
+
+    mask = sitk.GetImageFromArray(mask_arr)
+    mask.CopyInformation(image)
+    return mask
+
+def _detect_slice_radius(
+    slice_arr: np.ndarray,
+    spacing: tuple,
+    origin: tuple,
+    center_x: float,
+    center_y: float,
+    threshold: float = -1000.0,
+) -> float | None:
+    """
+    Detect the FOV radius on a single axial slice by finding the
+    largest inscribed circle of non-background voxels.
+    
+    Works by computing the distance of every non-background voxel
+    from the center, then taking a high percentile as the radius.
+    """
+    inside = slice_arr > threshold  # (y, x)
+
+    if inside.sum() < 100:
+        return None
+
+    iy, ix = np.where(inside)
+    px = origin[0] + ix * spacing[0]
+    py = origin[1] + iy * spacing[1]
+
+    dist = np.sqrt((px - center_x) ** 2 + (py - center_y) ** 2)
+    return float(np.percentile(dist, 100))
+
+
 def segment_skin(input:Optional[sitk.Image], modality:str = 'CT', **kwargs)->sitk.Image:
     """
     Segment the skin from the input image using TotalSegmentator.
@@ -254,7 +338,7 @@ def remove_small_objects(mask, min_size=1000):
     
 def segment_cbct_ac(cbct, sct, fov_mask = None):
     if fov_mask is None:
-        cbct_fov = elekta_fov(cbct)
+        cbct_fov = get_cbct_fov(cbct, 2)
     else:
         cbct_fov = fov_mask
     cbct = img.mask_image(sct, cbct_fov)
@@ -279,7 +363,7 @@ def generate_sct(cbct, device='cuda:0'):
     cbct_cor_sitk = sitk.Cast(cbct_cor_sitk, sitk.sitkInt16)
     return cbct_cor_sitk
 
-def segment_ct_ac(ct, ):
+def segment_ct_ac(ct, ct_body):
     ct_lung,_ = segment_lung(ct)
     ct_lung = ct_lung > 0
     threshold_air_ct = -250

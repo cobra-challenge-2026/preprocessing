@@ -312,7 +312,7 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
         
         return deformed, params, dvf
 
-def apply_transforms(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.Image, default_value = -1024)->sitk.Image:
+def apply_transforms(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.Image, default_value = -1024, interpolator = sitk.sitkLinear)->sitk.Image:
     """ 
     Apply rigid and deformable registratio while keeping the FOV of original CT 
     Parameters:
@@ -320,12 +320,13 @@ def apply_transforms(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.
     rigid_transform (sitk.Transform): The rigid transform to be applied to the CT image.
     dvf (sitk.Image): The deformation vector field to be applied after the rigid transform.
     default_value (float, optional): The default pixel value for areas outside the original FOV after transformation. Defaults to -1024.
+    interpolator (sitk.Interpolator): The interpolator to be used for resampling. Defaults to sitk.sitkLinear.
     """
-    ct_rigid = sitk.Resample(ct, ct, rigid_transform, sitk.sitkLinear, default_value)    
+    ct_rigid = sitk.Resample(ct, ct, rigid_transform, interpolator, default_value)    
     dvf = sitk.Resample(dvf, ct)
     dvf = sitk.Cast(dvf, sitk.sitkVectorFloat64)
     transform_def = sitk.DisplacementFieldTransform(dvf)
-    ct_deformed = sitk.Resample(ct_rigid, ct_rigid, transform_def, sitk.sitkLinear, default_value)
+    ct_deformed = sitk.Resample(ct_rigid, ct_rigid, transform_def, interpolator, default_value)
     
     return ct_deformed
 

@@ -321,7 +321,7 @@ class PreProcessor:
     ### --- Run deformable registration between clinical CBCT and CT --- ###
     def run_deformable(self):
         self.logger.info("Running deformable registration...")
-        ct_rigid, self.rigid_transform = reg.rigid_elastix(
+        self.ct_rigid, self.rigid_transform = reg.rigid_elastix(
                         fixed = self.cbct_clinical,
                         moving = self.ct,
                         parameter_file='/code/configs/rigid_params.txt',
@@ -329,30 +329,37 @@ class PreProcessor:
                     )
         self.ct_def_small, _, self.dvf = reg.deformable_impact(
                         fixed = self.cbct_clinical,
-                        moving = ct_rigid,
+                        moving = self.ct_rigid,
                         output_dir = self.config.data.output
                     )
-        self.ct_def_full = reg.apply_transforms(self.ct, self.rigid_transform, self.dvf)
-        io.save_image(self.ct_def_small,os.path.join(self.config.data.output, 'ct_def_small.mha'))
-        io.save_image(self.ct_def_full,os.path.join(self.config.data.output, 'ct_def_full.mha'))
+        self.ct_rigid_full = sitk.Resample(self.ct, self.ct, self.rigid_transform, sitk.sitkLinear, -1024)  
+        self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
         self.logger.info("Deformable registration completed.")
     
     def postprocess_deformed(self):
         self.logger.info("Postprocessing deformed CT...")
+        if self.fov_cbct is None:
+            self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
         vct_gen = vc.VirtualCTCreator(correct_cbct_before_virtual_ct=True, sct_model_path='/code/configs/checkpoint')
         self.ct_def_masked, cbct_for_blending = vct_gen.create(
             deformed_ct = self.ct_def_small,
             cbct = self.cbct_clinical,
+            cbct_fov = self.fov_cbct
         )
-        io.save_image(cbct_for_blending, os.path.join(self.config.data.output, 'cbct_for_blending.mha'), dtype='int16')
-        # self.ct_def_small, ac_mask_ct, ac_mask_cbct = img.ac_correction(self.ct_def_small, self.cbct_clinical)
-        self.fov_cbct = seg.elekta_fov(self.cbct_clinical, threshold=-1024)
-        self.ct_def_masked = img.mask_image(self.ct_def_masked, self.fov_cbct, mask_value=-1024)
-        # ac_mask_ct = sitk.Resample(ac_mask_ct, self.ct_def_full, sitk.Transform(), sitk.sitkNearestNeighbor)
-        # ac_mask_cbct = sitk.Resample(ac_mask_cbct, self.ct_def_full, sitk.Transform(), sitk.sitkNearestNeighbor)
-        # self.ct_filled = img.fill_cavities_by_dilation(self.ct_def_full, ac_mask_ct)
-        # self.ct_def = img.insert_air_cavity(self.ct_filled, ac_mask_cbct, air_value=-824.0)
-        self.ct_def = self.ct_def_full
+        self.dvf = sitk.Cast(self.dvf, sitk.sitkVectorFloat64)
+        dvf_for_transform = sitk.Image(self.dvf)   # deep copy
+        dfield_tx = sitk.DisplacementFieldTransform(dvf_for_transform)
+        fov_cbct_deformed = sitk.Resample(self.fov_cbct, self.fov_cbct, dfield_tx, sitk.sitkNearestNeighbor, 0)
+        fov_intersection = sitk.And(self.fov_cbct, fov_cbct_deformed)
+        fov_intersection = sitk.Cast(fov_intersection, sitk.sitkInt16)
+        fov_intersection_full = sitk.Resample(fov_intersection, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_intersection_full = sitk.BinaryErode(fov_intersection_full, (1,1,1))
+        ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct_rigid_full, sitk.Transform(), sitk.sitkLinear, -1024)
+        self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
+        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * self.ct_rigid_full
+        self.ct_def = sitk.Clamp(self.ct_def, lowerBound=-1024, upperBound=3071)
+        self.ct_def_masked = sitk.Clamp(self.ct_def_masked, lowerBound=-1024, upperBound=3071)
+        self.cbct_clinical = sitk.Clamp(self.cbct_clinical, lowerBound=-1024, upperBound=3071)
         self.logger.info("Postprocessing completed.")
 
     ### --- Save deformed CT, FOV mask, and DVF to files --- ###
@@ -361,7 +368,7 @@ class PreProcessor:
         io.save_image(self.ct_def, self.ct_def_path(), dtype='int16')
         io.save_image(self.fov_cbct, self.fov_cbct_path(), dtype='uint16')
         io.save_image(self.ct_def_masked, self.ct_def_masked_path(), dtype='int16')
-        sitk.WriteImage(self.dvf, self.dvf_path(), useCompression=True)
+        sitk.WriteImage(self.dvf, self.dvf_path())
         sitk.WriteTransform(self.rigid_transform, self.rigid_transform_path())
         self.logger.info("Preprocessed data saved.")
         
