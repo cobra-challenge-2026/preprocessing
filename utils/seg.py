@@ -60,7 +60,7 @@ def get_cbct_fov(image: sitk.Image, margin_mm: float = 2.0) -> sitk.Image:
 
     radii = np.full(n_slices, default_radius)
 
-    n_check = min(60, n_slices // 2)
+    n_check = min(200, n_slices // 2)
     for s in list(range(n_check)) + list(range(n_slices - n_check, n_slices)):
         r = _detect_slice_radius(arr[s], spacing, origin, center_x, center_y)
         if r is not None and r < default_radius:
