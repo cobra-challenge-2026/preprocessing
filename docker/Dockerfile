@@ -8,6 +8,7 @@ RUN apt install python3 python3-pip -y
 RUN apt install cmake -y
 
 COPY docker/requirements.txt .
+RUN pip install pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip uninstall -y SimpleITK
 RUN pip install SimpleITK-SimpleElastix
