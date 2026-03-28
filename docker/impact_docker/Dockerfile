@@ -26,7 +26,9 @@ ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
 
-RUN git clone https://github.com/vboussot/ImpactElastix.git
+RUN git clone https://github.com/vboussot/ImpactElastix.git \
+ && cd /lib/ImpactElastix \
+ && git checkout ce4bfc1
 RUN mkdir -p /lib/elastix-build /lib/elastix-install
 WORKDIR /lib/elastix-build
 
@@ -46,7 +48,9 @@ RUN apt update
 RUN apt install python3 python3-pip -y 
 
 WORKDIR /
-RUN git clone https://github.com/vboussot/ImpactLoss.git /ImpactLoss
+RUN git clone https://github.com/vboussot/ImpactLoss.git /ImpactLoss \
+ && cd /ImpactLoss \
+ && git checkout 0d2ce2e
 RUN bash /ImpactLoss/Data/Models/download_models.sh
 
 WORKDIR /app
