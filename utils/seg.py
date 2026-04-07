@@ -28,18 +28,28 @@ def elekta_fov(input: sitk.Image, threshold: float = -1024)->sitk.Image:
     cbct_fov = sitk.VotingBinaryIterativeHoleFilling(cbct_fov)
     return cbct_fov
 
-def get_cbct_fov(image: sitk.Image, margin_mm: float = 2.0) -> sitk.Image:
+def get_cbct_fov(
+    image: sitk.Image,
+    margin_mm: float = 2.0,
+    threshold: float = -1000.0,
+    min_inside_voxels: int = 100,
+) -> sitk.Image:
     """
     Create a circular FOV mask for a CBCT image.
     
     The circle is centered in the XY plane with radius derived from the
     image geometry. For edge slices where the FOV shrinks, it detects
-    the actual boundary per slice.
+    the actual boundary per slice. Slices with insufficient foreground
+    support are treated as outside the FOV.
     
     Args:
         image: Input CBCT volume (SimpleITK Image).
         margin_mm: Shrink the radius by this amount (mm) to avoid
                    partial-volume edge voxels. Typically 1-2 mm.
+        threshold: Intensity threshold used to distinguish voxels inside
+                   the CBCT FOV from background.
+        min_inside_voxels: Minimum number of voxels above threshold for a
+                           slice to be considered inside the FOV.
     
     Returns:
         Binary SimpleITK Image (UInt8): 1 inside FOV, 0 outside.
@@ -53,18 +63,33 @@ def get_cbct_fov(image: sitk.Image, margin_mm: float = 2.0) -> sitk.Image:
 
     extent_x = size[0] * spacing[0]
     extent_y = size[1] * spacing[1]
-    default_radius = min(extent_x, extent_y) / 2 - margin_mm
+    default_radius = max(min(extent_x, extent_y) / 2 - margin_mm, 0.0)
 
     arr = sitk.GetArrayFromImage(image)  # shape: (z, y, x)
     n_slices = arr.shape[0]
+    inside = arr > threshold
+    inside_counts = np.count_nonzero(inside, axis=(1, 2))
 
-    radii = np.full(n_slices, default_radius)
+    radii = np.where(inside_counts >= min_inside_voxels, default_radius, 0.0)
 
     n_check = min(200, n_slices // 2)
-    for s in list(range(n_check)) + list(range(n_slices - n_check, n_slices)):
-        r = _detect_slice_radius(arr[s], spacing, origin, center_x, center_y)
-        if r is not None and r < default_radius:
-            radii[s] = r - margin_mm
+    edge_slices = sorted(
+        set(range(n_check)) | set(range(n_slices - n_check, n_slices))
+    )
+    for s in edge_slices:
+        r = _detect_slice_radius(
+            arr[s],
+            spacing,
+            origin,
+            center_x,
+            center_y,
+            threshold=threshold,
+            min_inside_voxels=min_inside_voxels,
+        )
+        if r is None:
+            radii[s] = 0.0
+        elif r < default_radius:
+            radii[s] = max(r - margin_mm, 0.0)
 
     mask_arr = np.zeros_like(arr, dtype=np.uint8)
 
@@ -91,6 +116,7 @@ def _detect_slice_radius(
     center_x: float,
     center_y: float,
     threshold: float = -1000.0,
+    min_inside_voxels: int = 100,
 ) -> float | None:
     """
     Detect the FOV radius on a single axial slice by finding the
@@ -101,7 +127,7 @@ def _detect_slice_radius(
     """
     inside = slice_arr > threshold  # (y, x)
 
-    if inside.sum() < 100:
+    if np.count_nonzero(inside) < min_inside_voxels:
         return None
 
     iy, ix = np.where(inside)

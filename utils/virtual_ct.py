@@ -11,6 +11,7 @@ class VirtualCTCreator:
         air_threshold_hu: float = -200,
         blend_margin_mm: float = 3.0,
         body_threshold_hu: float = -300,
+        sct_max_copy_hu: Optional[float] = 100.0,
         correct_cbct_before_virtual_ct: bool = False,
         sct_model_path: Optional[str] = None,
         sct_device: str = "cuda",
@@ -20,6 +21,7 @@ class VirtualCTCreator:
         self.air_threshold_hu = air_threshold_hu
         self.blend_margin_mm = blend_margin_mm
         self.body_threshold_hu = body_threshold_hu
+        self.sct_max_copy_hu = sct_max_copy_hu
         self.correct_cbct_before_virtual_ct = correct_cbct_before_virtual_ct
         self.sct_apply_normalization = sct_apply_normalization
         self.sct_apply_denormalization = sct_apply_denormalization
@@ -61,13 +63,15 @@ class VirtualCTCreator:
     ) -> sitk.Image:
         """Build a virtual CT by blending CT and CBCT in mismatch low-density regions."""
         deformed_ct_arr = sitk.GetArrayFromImage(deformed_ct)
-
         if self.correct_cbct_before_virtual_ct:
             cbct_for_blending = self._predict_corrected_cbct(cbct)
         else:
             cbct_for_blending = cbct
 
         cbct_arr = sitk.GetArrayFromImage(cbct_for_blending)
+        cbct_arr_for_blending = cbct_arr
+        if self.correct_cbct_before_virtual_ct and self.sct_max_copy_hu is not None:
+            cbct_arr_for_blending = np.clip(cbct_arr_for_blending, a_min=None, a_max=self.sct_max_copy_hu)
 
         cbct_acs = seg.segment_cbct_ac(cbct, cbct_for_blending, fov_mask = cbct_fov)
         ct_body = seg.segment_skin(deformed_ct)
@@ -82,10 +86,20 @@ class VirtualCTCreator:
         blend_mask = sitk.SmoothingRecursiveGaussian(blend_mask, self.blend_margin_mm/2)
         
         blend_mask_arr = np.clip(sitk.GetArrayFromImage(blend_mask), 0, 1)
+        blend_region_arr = sitk.GetArrayFromImage(dilated).astype(bool)
+        ct_body_arr = sitk.GetArrayFromImage(ct_body).astype(bool)
+        cbct_fov_arr = sitk.GetArrayFromImage(cbct_fov).astype(bool)
 
-        blend_mask_arr = blend_mask_arr * sitk.GetArrayFromImage(ct_body) * sitk.GetArrayFromImage(cbct_fov)
+        blend_region_arr = blend_region_arr & ct_body_arr & cbct_fov_arr
+        blend_mask_arr = blend_mask_arr * blend_region_arr
         
-        virtual_ct_arr = (1 - blend_mask_arr) * deformed_ct_arr + blend_mask_arr * cbct_arr
+        virtual_ct_arr = (1 - blend_mask_arr) * deformed_ct_arr + blend_mask_arr * cbct_arr_for_blending
+        if self.correct_cbct_before_virtual_ct and self.sct_max_copy_hu is not None:
+            virtual_ct_arr = np.where(
+                blend_region_arr,
+                np.minimum(virtual_ct_arr, self.sct_max_copy_hu),
+                virtual_ct_arr,
+            )
 
         virtual_ct = sitk.GetImageFromArray(virtual_ct_arr.astype(np.int16))
         virtual_ct.CopyInformation(cbct_for_blending)
@@ -114,6 +128,7 @@ def parse_args():
     parser.add_argument("--air-threshold-hu", type=float, default=-200)
     parser.add_argument("--blend-margin-mm", type=float, default=3.0)
     parser.add_argument("--body-threshold-hu", type=float, default=-300)
+    parser.add_argument("--sct-max-copy-hu", type=float, default=120.0)
     return parser.parse_args()
 
 
@@ -130,6 +145,7 @@ if __name__ == "__main__":
         air_threshold_hu=args.air_threshold_hu,
         blend_margin_mm=args.blend_margin_mm,
         body_threshold_hu=args.body_threshold_hu,
+        sct_max_copy_hu=args.sct_max_copy_hu,
         correct_cbct_before_virtual_ct=True,
         sct_model_path=args.checkpoint,
         sct_device=args.device,

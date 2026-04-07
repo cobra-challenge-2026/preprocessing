@@ -340,7 +340,7 @@ class PreProcessor:
         self.logger.info("Postprocessing deformed CT...")
         if self.fov_cbct is None:
             self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
-        vct_gen = vc.VirtualCTCreator(correct_cbct_before_virtual_ct=True, sct_model_path='/code/configs/checkpoint')
+        vct_gen = vc.VirtualCTCreator(correct_cbct_before_virtual_ct=True, sct_model_path='/code/configs/checkpoint',sct_max_copy_hu=100)
         self.ct_def_masked, cbct_for_blending = vct_gen.create(
             deformed_ct = self.ct_def_small,
             cbct = self.cbct_clinical,
