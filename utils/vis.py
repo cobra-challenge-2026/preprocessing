@@ -6,6 +6,8 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive, file-only backend
 from matplotlib import pyplot as plt
 import utils.img as img
+from scipy import ndimage
+from typing import List, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -181,3 +183,238 @@ def generate_overview(
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=300)
 
+
+
+VisMode = Literal["raw", "diff", "checkerboard", "fusion", "edges"]
+
+VIS_DEFAULTS: List[VisMode] = ["raw", "diff", "checkerboard"]
+
+
+def _sobel_edges(slice_2d: np.ndarray) -> np.ndarray:
+    sx = ndimage.sobel(slice_2d.astype(float), axis=0)
+    sy = ndimage.sobel(slice_2d.astype(float), axis=1)
+    mag = np.hypot(sx, sy)
+    if mag.max() > 0:
+        mag /= mag.max()
+    return mag
+
+
+def _make_checkerboard(a: np.ndarray, b: np.ndarray, tile: int = 32) -> np.ndarray:
+    rows, cols = a.shape
+    row_idx = (np.arange(rows) // tile) % 2
+    col_idx = (np.arange(cols) // tile) % 2
+    mask = row_idx[:, None] ^ col_idx[None, :]
+    return np.where(mask, b, a)
+
+
+def _color_fusion(a: np.ndarray, b: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    a_n = np.clip((a - vmin) / (vmax - vmin + 1e-8), 0, 1)
+    b_n = np.clip((b - vmin) / (vmax - vmin + 1e-8), 0, 1)
+    rgb = np.zeros((*a.shape, 3))
+    rgb[..., 0] = a_n
+    rgb[..., 1] = b_n
+    rgb[..., 2] = a_n
+    return rgb
+
+
+def _linear_rescale(src: np.ndarray, ref: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    s_mean, s_std = src[mask].mean(), src[mask].std()
+    r_mean, r_std = ref[mask].mean(), ref[mask].std()
+    return (src - s_mean) / (s_std + 1e-8) * r_std + r_mean
+
+
+def generate_overview_deformed(
+    cbct_clinical: sitk.Image,
+    ct_deformed: sitk.Image,
+    output_path: str,
+    patient_ID: str,
+    metadata: dict | None = None,
+    fov: sitk.Image | None = None,
+    vis_modes: List[VisMode] | None = None,
+    checkerboard_tile: int = 32,
+    diff_range: float = 500,
+) -> None:
+    """
+    Generate an overview PNG comparing CBCT clinical and deformed CT.
+
+    Parameters
+    ----------
+    cbct_clinical : sitk.Image
+        The CBCT clinical image (reference grid).
+    ct_deformed : sitk.Image
+        The deformed CT, resampled onto the CBCT grid.
+    output_path : str
+        Path to save the overview PNG.
+    patient_ID : str
+        Patient identifier shown on each panel.
+    metadata : dict, optional
+        Metadata to display in a text box.
+    fov : sitk.Image, optional
+        Field-of-view mask for the CBCT. If None, the full volume is used.
+    vis_modes : list of VisMode, optional
+        Which panels to include. Any combination of:
+        "raw"          – CBCT clinical / CT deformed side by side (2 cols)
+        "diff"         – FOV-masked difference map (1 col)
+        "checkerboard" – checkerboard overlay (1 col)
+        "fusion"       – magenta/green colour fusion (1 col)
+        "edges"        – CBCT with CT Sobel edge overlay (1 col)
+        "histogram"    – difference histogram (separate file)
+        Default: all of the above.
+    checkerboard_tile : int
+        Tile size in pixels for the checkerboard.
+    diff_range : float
+        Symmetric vmin/vmax for the difference colour map.
+    """
+    if vis_modes is None:
+        vis_modes = list(VIS_DEFAULTS)
+
+    # ── Resample CT deformed onto CBCT grid ──────────────────────────────
+    ct_res = sitk.Resample(ct_deformed, cbct_clinical)
+
+    ct_res[ct_res < -1024] = -1024
+    cbct_clinical[cbct_clinical < -1024] = -1024
+
+    cbct_arr = sitk.GetArrayFromImage(cbct_clinical).astype(float)
+    ct_arr = sitk.GetArrayFromImage(ct_res).astype(float)
+
+    fov_arr = (
+        sitk.GetArrayFromImage(sitk.Resample(fov, cbct_clinical)).astype(bool)
+        if fov is not None
+        else np.ones_like(cbct_arr, dtype=bool)
+    )
+
+    # ── Intensity matching (linear, inside FOV only) ─────────────────────
+    # ── Intensity matching & windowed difference ─────────────────────────
+    ct_matched = _linear_rescale(ct_arr, cbct_arr, fov_arr)
+    diff_arr = np.where(fov_arr, cbct_arr - ct_matched, 0)
+
+    # ── Percentile-based window ──────────────────────────────────────────
+    bg_cbct, hi_cbct = np.percentile(cbct_arr, 0.1), np.percentile(cbct_arr, 99.9)
+    bg_ct, hi_ct = np.percentile(ct_arr, 0.1), np.percentile(ct_arr, 99.9)
+
+    # ── Geometry ─────────────────────────────────────────────────────────
+    z, y, x = cbct_arr.shape
+    sx, sy, sz = cbct_clinical.GetSpacing()
+    Lx, Ly, Lz = x * sx, y * sy, z * sz
+
+    slice_sag = x // 2
+    slice_cor = y // 2
+    slice_ax = z // 2
+
+    def _get_slice(vol, view_idx):
+        if view_idx == 0:
+            return vol[slice_ax, :, :]
+        elif view_idx == 1:
+            return vol[::-1, :, slice_sag]
+        else:
+            return vol[::-1, slice_cor, :]
+
+    # ── Build columns dynamically ────────────────────────────────────────
+    columns = []  # list of (label, draw_func)
+
+    if "raw" in vis_modes:
+        columns.append(("CBCT clinical", lambda ax, v: ax.imshow(
+            _get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct)))
+        columns.append(("CT deformed", lambda ax, v: ax.imshow(
+            _get_slice(ct_arr, v), cmap="gray", vmin=bg_ct, vmax=hi_ct)))
+
+    if "diff" in vis_modes:
+        columns.append(("Difference (scaled)", lambda ax, v: ax.imshow(
+            _get_slice(diff_arr, v), cmap="RdBu", vmin=-diff_range, vmax=diff_range)))
+
+    if "checkerboard" in vis_modes:
+        def _draw_checker(ax, v):
+            ax.imshow(
+                _make_checkerboard(_get_slice(cbct_arr, v),
+                                   _get_slice(ct_matched, v),
+                                   tile=checkerboard_tile),
+                cmap="gray", vmin=bg_cbct, vmax=hi_cbct)
+        columns.append(("Checkerboard", _draw_checker))
+
+    if "fusion" in vis_modes:
+        def _draw_fusion(ax, v):
+            ax.imshow(_color_fusion(
+                _get_slice(cbct_arr, v),
+                _get_slice(ct_matched, v),
+                bg_cbct, hi_cbct))
+        columns.append(("Fusion (CBCT=M, CT=G)", _draw_fusion))
+
+    if "edges" in vis_modes:
+        def _draw_edges(ax, v):
+            ax.imshow(_get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct)
+            ax.imshow(_sobel_edges(_get_slice(ct_arr, v)), cmap="Reds", alpha=0.4)
+        columns.append(("CBCT + CT edges", _draw_edges))
+
+    has_metadata = metadata not in (None, {})
+    if has_metadata:
+        columns.append(("__metadata__", None))
+
+    n_cols = len(columns)
+    n_rows = 3
+
+    # ── Layout ───────────────────────────────────────────────────────────
+    height_ratios = [
+        Ly / Ly,
+        (Lz / Ly) * (Lx / Ly),
+        Lz / Ly,
+    ]
+    width_ratios = [1.0] * n_cols
+    if has_metadata:
+        width_ratios[-1] = 1.2
+
+    x_len = n_cols * Lx / Ly
+    y_len = np.sum(height_ratios) / x_len
+    size = 20
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(size, y_len * size),
+        gridspec_kw={"width_ratios": width_ratios, "height_ratios": height_ratios},
+    )
+    if n_cols == 1:
+        axes = axes[:, np.newaxis]
+
+    # ── Draw ─────────────────────────────────────────────────────────────
+    row_labels = ["Axial", "Sagittal", "Coronal"]
+
+    def _add_label(ax, text):
+        props = dict(facecolor="white", alpha=0.9, edgecolor="white", boxstyle="round,pad=0.5")
+        ax.text(0.05, 0.95, text, transform=ax.transAxes, fontsize=10,
+                verticalalignment="top", bbox=props)
+
+    def _add_patient(ax, text):
+        props = dict(facecolor="white", alpha=0.9, edgecolor="white", boxstyle="round,pad=0.5")
+        ax.text(0.95, 0.95, text, transform=ax.transAxes, fontsize=10,
+                verticalalignment="top", horizontalalignment="right", bbox=props)
+
+    for col_idx, (label, draw_fn) in enumerate(columns):
+        for row_idx in range(n_rows):
+            a = axes[row_idx, col_idx]
+            a.set_xticks([])
+            a.set_yticks([])
+
+            if label == "__metadata__":
+                a.axis("off")
+                continue
+
+            draw_fn(a, row_idx)
+            _add_label(a, label)
+            _add_patient(a, patient_ID)
+
+            if col_idx == 0:
+                a.set_ylabel(row_labels[row_idx], fontsize=12, fontweight="bold")
+
+    if has_metadata:
+        metadata_text = format_metadata(metadata, patient_ID)
+        fig.text(
+            0.73, 0.95, metadata_text, fontsize=13, va="top", ha="left",
+            family="monospace",
+            bbox=dict(facecolor="white", alpha=0.95, edgecolor="lightgray",
+                      boxstyle="round,pad=0.6"),
+        )
+
+    fig.subplots_adjust(wspace=0.02, hspace=0.02)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)

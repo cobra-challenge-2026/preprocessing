@@ -68,6 +68,9 @@ class PreProcessor:
     def overview_path(self) -> str:
         return os.path.join(self.config.data.output, f'overview_{self.id}.png')
     
+    def overview_path_s2(self) -> str:
+        return os.path.join(self.config.data.output, f'overview_{self.id}_deformed.png')
+    
     def fov_cbct_path(self) -> str:
         return os.path.join(self.config.data.output, f'fov_cbct.mha')
     
@@ -371,7 +374,19 @@ class PreProcessor:
         sitk.WriteImage(self.dvf, self.dvf_path())
         sitk.WriteTransform(self.rigid_transform, self.rigid_transform_path())
         self.logger.info("Preprocessed data saved.")
-        
+    
+    def generate_overview_s2(self):
+        self.logger.info("Generating overview visualization...")
+        vis.generate_overview_deformed(
+            cbct_clinical = copy.deepcopy(self.cbct_clinical),
+            ct_deformed = copy.deepcopy(self.ct_def_masked),
+            output_path = self.overview_path_s2(),
+            patient_ID = self.id,
+            fov = copy.deepcopy(self.fov_cbct),
+            checkerboard_tile = 24
+        )
+        self.logger.info("Overview visualization generated.")
+    
     ### --- Check if all necessary files exist after stage2 --- ###
     def patient_complete_s2(self) -> bool:
         """Checks if all essential files for the patient exist."""
