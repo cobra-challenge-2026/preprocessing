@@ -109,6 +109,7 @@ class PreProcessor:
             self.run_deformable()
             self.logger.info("Postprocessing deformed CT...")
             self.postprocess_deformed()
+            self.generate_overview_s2()
             self.write_data_s2()
             self.logger.info("Stage 2 preprocessing completed.")
 
