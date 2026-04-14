@@ -405,17 +405,28 @@ class PreProcessor:
             cbct = self.cbct_clinical,
             cbct_fov = self.fov_cbct
         )
-        self.dvf = sitk.Cast(self.dvf, sitk.sitkVectorFloat64)
+        self.dvf = reg.extend_vector_field_outside_mask(
+            self.dvf,
+            self.fov_cbct,
+            reference_image=self.ct,
+        )
         dvf_for_transform = sitk.Image(self.dvf)   # deep copy
         dfield_tx = sitk.DisplacementFieldTransform(dvf_for_transform)
-        fov_cbct_deformed = sitk.Resample(self.fov_cbct, self.fov_cbct, dfield_tx, sitk.sitkNearestNeighbor, 0)
-        fov_intersection = sitk.And(self.fov_cbct, fov_cbct_deformed)
-        fov_intersection = sitk.Cast(fov_intersection, sitk.sitkInt16)
-        fov_intersection_full = sitk.Resample(fov_intersection, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_cbct_full = sitk.Resample(self.fov_cbct, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_cbct_deformed = sitk.Resample(fov_cbct_full, fov_cbct_full, dfield_tx, sitk.sitkNearestNeighbor, 0)
+        fov_intersection_full = sitk.And(fov_cbct_full, fov_cbct_deformed)
+        fov_intersection_full = sitk.Cast(fov_intersection_full, sitk.sitkInt16)
         fov_intersection_full = sitk.BinaryErode(fov_intersection_full, (1,1,1))
         ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct_rigid_full, sitk.Transform(), sitk.sitkLinear, -1024)
+        ct_def_extended = reg.apply_transforms(
+            ct=self.ct,
+            rigid_transform=self.rigid_transform,
+            dvf=self.dvf,
+            default_value=-1024,
+            interpolator=sitk.sitkLinear,
+        )
         self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
-        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * self.ct_rigid_full
+        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * ct_def_extended
         self.ct_def = sitk.Clamp(self.ct_def, lowerBound=-1024, upperBound=3071)
         self.ct_def_masked = sitk.Clamp(self.ct_def_masked, lowerBound=-1024, upperBound=3071)
         self.cbct_clinical = sitk.Clamp(self.cbct_clinical, lowerBound=-1024, upperBound=3071)
@@ -501,4 +512,3 @@ class PreProcessor:
         ]
         return all(os.path.isfile(f) for f in files_to_check)
         
-
