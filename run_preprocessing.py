@@ -32,6 +32,8 @@ if __name__ == "__main__":
                     processor.generate_overview_deformed()
                 else:
                     processor.run_stage2()
+            elif args.stage == 3:
+                processor.run_stage3()
             logger.info(f"--- Successfully finished patient {patient_id} ---")
 
         except Exception as e:

@@ -73,6 +73,12 @@ class PreProcessor:
     
     def fov_cbct_path(self) -> str:
         return os.path.join(self.config.data.output, f'fov_cbct.mha')
+
+    def cbct_simulated_path(self) -> str:
+        return os.path.join(self.config.data.output, f'cbct_simulated.mha')
+
+    def projections_simulated_path(self) -> str:
+        return os.path.join(self.config.data.output, f'projections_simulated.mha')
     
     def ct_def_path(self) -> str:
         return os.path.join(self.config.data.output, f'ct_def.mha')
@@ -437,6 +443,52 @@ class PreProcessor:
         )
         self.logger.info("Overview visualization generated.")
     
+        
+    ### --- Stage 3: simulate projections from deformed CT --- ###
+
+    def run_stage3(self):
+        self.logger.info("Starting stage 3 preprocessing...")
+        if self.patient_complete_s3():
+            self.logger.info("All stage 3 files already exist. Skipping patient...")
+        else:
+            self.load_data_s3()
+            self.simulate_projections()
+            self.logger.info("Stage 3 preprocessing completed.")
+
+    def load_data_s3(self):
+        self.logger.info("Loading data for stage 3...")
+        self.ct_def = io.read_image(self.ct_def_path())
+        self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.logger.info("Data for stage 3 loaded.")
+
+    def simulate_projections(self):
+        from simcbctgenerator import ProjectionPipeline
+        from simcbctgenerator.utils.config import MotionConfig
+
+        self.logger.info("Generating simulated projections...")
+        pipeline = ProjectionPipeline(
+            vendor=self.config.general.vendor.lower(),
+            correct_contrast_media=self.config.settings.correct_contrast_media,
+            gpu=self.device.type != 'cpu',
+        )
+        pipeline.run(
+            ct_image=self.ct_def,
+            cbct_image=self.cbct_clinical,
+            geometry_xml=self.cbct_geometry_path(),
+            metadata_yaml=self.metadata_path(),
+            random_motion_type=MotionConfig.MotionType.PELVIS,
+            output_dir=self.config.data.output,
+            cleanup_temp=True,
+        )
+        self.logger.info("Simulated projections and CBCT saved.")
+
+    def patient_complete_s3(self) -> bool:
+        files_to_check = [
+            self.cbct_simulated_path(),
+            self.projections_simulated_path(),
+        ]
+        return all(os.path.isfile(f) for f in files_to_check)
+
     ### --- Check if all necessary files exist after stage2 --- ###
     def patient_complete_s2(self) -> bool:
         """Checks if all essential files for the patient exist."""

@@ -133,6 +133,8 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
         compression(bool): Whether to use compression when saving the image. Default is True.
         dtype(sitk.PixelIDValueEnum): Default is None. Allowed dtypes: float32 and int16
     """
+    array = sitk.GetArrayFromImage(image)
+    print(f"min:{array.min()}, max:{array.max()}")
     if "dtype" in kwargs:
         dtype = kwargs["dtype"]
         if image.GetPixelIDTypeAsString() != '32-bit float': # type: ignore
@@ -143,7 +145,7 @@ def save_image(image:Optional[sitk.Image], image_path:str, compression:bool=True
         elif dtype == 'int16':
             image = sitk.Cast(image,sitk.sitkInt16)
         elif dtype == 'uint16':
-            image = sitk.Cast(image,sitk.sitkUInt16)
+            image = sitk.Cast(sitk.Clamp(image, lowerBound=0, upperBound=int(65535)),sitk.sitkUInt16)
         elif dtype == 'vectorfloat32':
             image = sitk.Cast(image,sitk.sitkVectorFloat32)
         else:

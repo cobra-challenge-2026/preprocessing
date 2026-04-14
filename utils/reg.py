@@ -278,7 +278,7 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
     Returns:
     Tuple[sitk.Image, sitk.Image]: A tuple containing the registered image and the displacement field.
     """
-    with tempfile.TemporaryDirectory(prefix = "impact_", dir = output_dir) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix = "impact_", dir = output_dir, ignore_cleanup_errors=True) as temp_dir:
         fixed_path = os.path.join(temp_dir, "fixed.mha")
         moving_path = os.path.join(temp_dir, "moving.mha")
 
