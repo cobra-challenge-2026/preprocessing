@@ -49,6 +49,14 @@ docker compose up -d
 docker exec -it cobra_preprocessing bash
 ```
 
+If you only want to run the stage 1 preprocessing steps, you don't need the impact docker container and you can run:
+
+```bash
+docker compose up -d cobra
+docker exec -it cobra_preprocessing bash
+```
+
+
 If docker is not available, the required packages can be also installed locally using pip:
 
 ```bash

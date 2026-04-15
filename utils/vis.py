@@ -115,19 +115,19 @@ def generate_overview(
     # --- Image Plotting (Columns 0, 1, 2) ---
 
     # Row 0 (Axial)
-    ax[0,0].imshow(sitk.GetArrayFromImage(ct)[slice_ax,:,:], cmap='gray', vmin=background_ct, vmax=high_ct)
-    ax[0,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[slice_ax,:,:], cmap='gray', vmin=background_clinical, vmax=high_clinical)
-    ax[0,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[slice_ax,:,:], cmap='gray', vmin=background_rtk, vmax=high_rtk)
+    ax[0,0].imshow(sitk.GetArrayFromImage(ct)[slice_ax,:,:], cmap='gray', vmin=background_ct, vmax=high_ct, aspect = sy/sx)
+    ax[0,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[slice_ax,:,:], cmap='gray', vmin=background_clinical, vmax=high_clinical, aspect = sy/sx)
+    ax[0,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[slice_ax,:,:], cmap='gray', vmin=background_rtk, vmax=high_rtk, aspect = sy/sx)
 
     # Row 1 (Sagittal)
-    ax[1,0].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag], cmap='gray', vmin=background_ct, vmax=high_ct)
-    ax[1,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[::-1,:,slice_sag], cmap='gray', vmin=background_clinical, vmax=high_clinical)
-    ax[1,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,:,slice_sag], cmap='gray', vmin=background_rtk, vmax=high_rtk)
+    ax[1,0].imshow(sitk.GetArrayFromImage(ct)[::-1,:,slice_sag], cmap='gray', vmin=background_ct, vmax=high_ct, aspect = sz/sy)
+    ax[1,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[::-1,:,slice_sag], cmap='gray', vmin=background_clinical, vmax=high_clinical, aspect = sz/sy)
+    ax[1,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,:,slice_sag], cmap='gray', vmin=background_rtk, vmax=high_rtk, aspect = sz/sy)
 
     # Row 2 (Coronal)
-    ax[2,0].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:], cmap='gray', vmin=background_ct, vmax=high_ct)
-    ax[2,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[::-1,slice_cor,:], cmap='gray', vmin=background_clinical, vmax=high_clinical)
-    ax[2,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,slice_cor,:], cmap='gray', vmin=background_rtk, vmax=high_rtk)
+    ax[2,0].imshow(sitk.GetArrayFromImage(ct)[::-1,slice_cor,:], cmap='gray', vmin=background_ct, vmax=high_ct, aspect = sz/sx)
+    ax[2,1].imshow(sitk.GetArrayFromImage(cbct_clinical)[::-1,slice_cor,:], cmap='gray', vmin=background_clinical, vmax=high_clinical, aspect = sz/sx)
+    ax[2,2].imshow(sitk.GetArrayFromImage(cbct_rtk)[::-1,slice_cor,:], cmap='gray', vmin=background_rtk, vmax=high_rtk, aspect = sz/sx)
 
     fig.subplots_adjust(wspace=0.02, hspace=0.02)
 
@@ -309,18 +309,20 @@ def generate_overview_deformed(
         else:
             return vol[::-1, slice_cor, :]
 
+    aspect_for_view = {0: sy / sx, 1: sz / sy, 2: sz / sx}
+    
     # ── Build columns dynamically ────────────────────────────────────────
     columns = []  # list of (label, draw_func)
 
     if "raw" in vis_modes:
         columns.append(("CBCT clinical", lambda ax, v: ax.imshow(
-            _get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct)))
+            _get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct, aspect=aspect_for_view[v])))
         columns.append(("CT deformed", lambda ax, v: ax.imshow(
-            _get_slice(ct_arr, v), cmap="gray", vmin=bg_ct, vmax=hi_ct)))
+            _get_slice(ct_arr, v), cmap="gray", vmin=bg_ct, vmax=hi_ct, aspect=aspect_for_view[v])))
 
     if "diff" in vis_modes:
         columns.append(("Difference (scaled)", lambda ax, v: ax.imshow(
-            _get_slice(diff_arr, v), cmap="RdBu", vmin=-diff_range, vmax=diff_range)))
+            _get_slice(diff_arr, v), cmap="RdBu", vmin=-diff_range, vmax=diff_range, aspect=aspect_for_view[v])))
 
     if "checkerboard" in vis_modes:
         def _draw_checker(ax, v):
@@ -328,7 +330,7 @@ def generate_overview_deformed(
                 _make_checkerboard(_get_slice(cbct_arr, v),
                                    _get_slice(ct_matched, v),
                                    tile=checkerboard_tile),
-                cmap="gray", vmin=bg_cbct, vmax=hi_cbct)
+                cmap="gray", vmin=bg_cbct, vmax=hi_cbct, aspect=aspect_for_view[v])
         columns.append(("Checkerboard", _draw_checker))
 
     if "fusion" in vis_modes:
@@ -336,13 +338,13 @@ def generate_overview_deformed(
             ax.imshow(_color_fusion(
                 _get_slice(cbct_arr, v),
                 _get_slice(ct_matched, v),
-                bg_cbct, hi_cbct))
+                bg_cbct, hi_cbct), aspect=aspect_for_view[v])
         columns.append(("Fusion (CBCT=M, CT=G)", _draw_fusion))
 
     if "edges" in vis_modes:
         def _draw_edges(ax, v):
-            ax.imshow(_get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct)
-            ax.imshow(_sobel_edges(_get_slice(ct_arr, v)), cmap="Reds", alpha=0.4)
+            ax.imshow(_get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct, aspect=aspect_for_view[v])
+            ax.imshow(_sobel_edges(_get_slice(ct_arr, v)), cmap="Reds", alpha=0.4, aspect=aspect_for_view[v])
         columns.append(("CBCT + CT edges", _draw_edges))
 
     has_metadata = metadata not in (None, {})
