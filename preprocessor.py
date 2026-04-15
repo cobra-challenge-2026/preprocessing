@@ -113,6 +113,39 @@ class PreProcessor:
             self.write_data_s2()
             self.logger.info("Stage 2 preprocessing completed.")
 
+    def generate_overview_image(self):
+        self.logger.info("Generating overview image...")
+        self.load_data_s1()
+        if self.cbct_clinical is None or self.cbct_rtk is None or self.ct is None:
+            self.logger.error("Clinical CBCT, RTK CBCT, or CT not loaded. Cannot generate overview.")
+            return
+        vis.generate_overview(
+            cbct_clinical = copy.deepcopy(self.cbct_clinical),
+            cbct_rtk = copy.deepcopy(self.cbct_rtk),
+            ct = copy.deepcopy(self.ct),
+            output_path = self.overview_path(),
+            patient_ID = self.id,
+            metadata=self.metadata
+        )
+        self.logger.info("Overview image generated.")
+    
+    
+    def generate_overview_deformed(self):
+        self.logger.info("Generating overview image...")
+        self.load_data_overview()
+        if self.cbct_clinical is None or self.ct_def_masked is None:
+            self.logger.error("Clinical CBCT or deformed CT not loaded. Cannot generate overview.")
+            return
+        vis.generate_overview_deformed(
+            cbct_clinical = copy.deepcopy(self.cbct_clinical),
+            ct_deformed = copy.deepcopy(self.ct_def_masked),
+            fov = copy.deepcopy(self.fov_cbct),
+            output_path = self.overview_path_s2(),
+            patient_ID = self.id,
+            metadata=self.metadata,
+            checkerboard_tile = 24
+        )
+        self.logger.info("Overview image generated.")
     ### individual preprocessing steps ###
     
     ### --- Load data from various sources --- ###
@@ -282,6 +315,14 @@ class PreProcessor:
         )
         self.logger.info("Overview visualization generated.")
 
+    def load_data_s1(self):
+        self.logger.info("Loading data for overview...")
+        self.ct = io.read_image(self.ct_path())
+        self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.cbct_rtk = io.read_image(self.cbct_rtk_path())
+        self.metadata = yaml.safe_load(open(self.metadata_path(), 'r'))
+        self.logger.info("Data for overview loaded.")
+    
     ### --- Save preprocessed data to files --- ###
     def write_data(self):
         self.logger.info("Saving preprocessed data to files...")
@@ -321,6 +362,14 @@ class PreProcessor:
         self.ct = io.read_image(self.ct_path())
         self.cbct_clinical = io.read_image(self.cbct_clinical_path())
         self.logger.info("Data for stage 2 loaded.")
+        
+    def load_data_overview(self):
+        self.logger.info("Loading data for overview...")
+        self.ct = io.read_image(self.ct_path())
+        self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.ct_def_masked = io.read_image(self.ct_def_masked_path())
+        self.fov_cbct = io.read_image(self.fov_cbct_path())
+        self.logger.info("Data for overview loaded.")
     
     ### --- Run deformable registration between clinical CBCT and CT --- ###
     def run_deformable(self):
