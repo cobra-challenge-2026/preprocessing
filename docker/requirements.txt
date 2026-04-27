@@ -1,7 +1,6 @@
 numpy
 matplotlib
 scipy
-SimpleITK
 convexAdam
 TotalSegmentator
 ipykernel
@@ -10,3 +9,4 @@ numba
 itk-rtk-cuda124
 xmltodict
 xdrt
+simcbctgenerator[all] @ git+https://github.com/openvoxelmed/simcbctgenerator.git

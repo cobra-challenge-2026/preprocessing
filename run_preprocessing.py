@@ -1,6 +1,5 @@
 import logging
 
-import torch
 from preprocessor import PreProcessor
 from utils.config import load_patient_configs
 import argparse
@@ -13,16 +12,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run preprocessing for patients.")
     parser.add_argument('-config_file', '-c', type=str, help='Path to the configuration file.')
     parser.add_argument('-device', '-d', type=str, default='cpu', help='Device to use for processing, e.g. cpu for CPU, cuda:0 for GPU 0,')
-    parser.add_argument('-stage', '-s', type=int, default=1, help='Preprocessing stage to run (1 or 2). ')
+    parser.add_argument('-stage', '-s', type=int, default=1, help='Preprocessing stage to run (1, 2, or 3).')
     parser.add_argument('--overview', action='store_true', help='Generate an overview image without running the preprocessing pipeline.')
+    parser.add_argument('--correct_contrast_media', action='store_true', help='Enable contrast media correction in stage 3 (requires PyTorch).')
+    parser.add_argument('--cleanup', action='store_true', help='Delete generated files for the given stage instead of running it.')
     args = parser.parse_args()
     configs = load_patient_configs(args.config_file)
 
     for patient_id, config in configs.items():
         try:
             logger.info(f"--- Processing patient {patient_id} ---")
-            processor = PreProcessor(patient_id, config, device=torch.device(args.device))
-            if args.stage == 1:
+            if args.correct_contrast_media:
+                config.settings.correct_contrast_media = True
+            processor = PreProcessor(patient_id, config, device=args.device)
+            # delete files for stage 2 or 3
+            if args.cleanup:
+                if args.stage == 2:
+                    processor.cleanup_s2()
+                elif args.stage == 3:
+                    processor.cleanup_s3()
+            elif args.stage == 1:
                 if args.overview:
                     processor.generate_overview_image()
                 else:

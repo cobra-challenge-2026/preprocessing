@@ -1,17 +1,25 @@
-# Use the official NVIDIA CUDA image as the base image
-FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+# required for nvcc 
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
 
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
-RUN apt update
-RUN apt install git -y
-RUN apt install python3 python3-pip -y
-RUN apt install cmake -y
+# CuPy needs to find the CUDA toolkit at runtime for JIT kernel compilation
+ENV CUDA_PATH=/usr/local/cuda
+ENV PATH="/usr/local/cuda/bin:$PATH"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git cmake build-essential software-properties-common libxcb1 libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 && \
+    add-apt-repository ppa:deadsnakes/ppa -y && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends python3.13 python3.13-dev && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY docker/requirements.txt .
-RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip uninstall -y SimpleITK
-RUN pip install SimpleITK-SimpleElastix
+RUN uv pip install --system --no-cache-dir \
+        torch torchvision \
+        --index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install --system --no-cache-dir -r requirements.txt
 
 WORKDIR /workspace
 COPY . .
