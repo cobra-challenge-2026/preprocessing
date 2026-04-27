@@ -26,6 +26,7 @@ class GeneralConfig(BaseModel):
 class SettingsConfig(BaseModel):
     correct_orientation: bool = False
     correct_scatter: bool = False
+    correct_contrast_media: bool = False
 
 class PatientConfig(BaseModel):
     data: DataConfig

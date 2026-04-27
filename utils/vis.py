@@ -233,6 +233,7 @@ def generate_overview_deformed(
     vis_modes: List[VisMode] | None = None,
     checkerboard_tile: int = 32,
     diff_range: float = 500,
+    image2_label: str = "CT deformed",
 ) -> None:
     """
     Generate an overview PNG comparing CBCT clinical and deformed CT.
@@ -416,6 +417,84 @@ def generate_overview_deformed(
         )
 
     fig.subplots_adjust(wspace=0.02, hspace=0.02)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def generate_overview_projections(
+    proj_real: np.ndarray,
+    proj_sim: np.ndarray,
+    gantry_angles: list,
+    output_path: str,
+    patient_ID: str,
+    target_angles: list = [0, 45, 90],
+) -> None:
+    """
+    Generate an overview PNG comparing real (I0-corrected) and simulated projections
+    at three gantry angles.
+
+    Parameters
+    ----------
+    proj_real : np.ndarray
+        I0-corrected real projections, shape [N, H, W].
+    proj_sim : np.ndarray
+        Simulated projections, shape [N, H, W].
+    gantry_angles : list
+        Gantry angle in degrees for each projection, length N.
+    output_path : str
+        Path to save the overview PNG.
+    patient_ID : str
+        Patient identifier shown on each panel.
+    target_angles : list
+        Gantry angles (degrees) to display. Default: [0, 45, 90].
+    """
+    angles_arr = np.array(gantry_angles) % 360.0
+
+    selected = []
+    for target in target_angles:
+        t = target % 360.0
+        diff = np.abs(angles_arr - t)
+        diff = np.minimum(diff, 360.0 - diff)
+        idx = int(np.argmin(diff))
+        selected.append((target, idx))
+
+    n_rows = len(selected)
+    n_cols = 3
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+
+    props = dict(facecolor="white", alpha=0.9, edgecolor="white", boxstyle="round,pad=0.4")
+
+    for row, (angle, idx) in enumerate(selected):
+        real_sl = proj_real[idx]
+        sim_sl  = proj_sim[idx]
+        diff_sl = real_sl - sim_sl
+
+        vmin_r, vmax_r = np.percentile(real_sl, 0.5), np.percentile(real_sl, 99.5)
+        vmin_s, vmax_s = np.percentile(sim_sl,  0.5), np.percentile(sim_sl,  99.5)
+        diff_lim = np.percentile(np.abs(diff_sl), 99)
+
+        for col, (sl, label, cmap, vmin, vmax) in enumerate([
+            (real_sl, "Real",       "gray",  vmin_r,    vmax_r),
+            (sim_sl,  "Simulated",  "gray",  vmin_s,    vmax_s),
+            (diff_sl, "Difference", "RdBu",  -diff_lim, diff_lim),
+        ]):
+            a = axes[row, col]
+            a.imshow(sl, cmap=cmap, vmin=vmin, vmax=vmax)
+            a.set_xticks([])
+            a.set_yticks([])
+            a.text(0.05, 0.95, label, transform=a.transAxes, fontsize=9,
+                   verticalalignment="top", bbox=props)
+            a.text(0.95, 0.95, patient_ID, transform=a.transAxes, fontsize=9,
+                   verticalalignment="top", horizontalalignment="right", bbox=props)
+            if col == 0:
+                a.set_ylabel(f"{angle}°", fontsize=12, fontweight="bold")
+
+    fig.subplots_adjust(wspace=0.02, hspace=0.04)
     plt.tight_layout()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=300)

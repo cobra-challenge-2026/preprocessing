@@ -10,7 +10,7 @@ To run the preprocessing pipeline, use the `run_preprocessing.py` script with a 
 
 An example script to generate a configuration file can be found here: [LMU Config Generator](configs/generate_config.py).
 
-Furthermore, you can specify the device to use for preprocessing (e.g. `cpu` for CPU, `cuda:0` for GPU 0) and the preprocessing stage to run (1 or 2). Currently, only stage 1 is implemented and GPU acceleration is only used for CBCT reconstruction using RTK.
+Furthermore, you can specify the device to use for preprocessing (e.g. `cpu` for CPU, `cuda:0` for GPU 0) and the preprocessing stage to run (1, 2, or 3).
 
 ### Usage
 
@@ -57,8 +57,9 @@ docker exec -it cobra_preprocessing bash
 ```
 
 
-If docker is not available, the required packages can be also installed locally using pip:
+If docker is not available, the required packages can be installed locally using [`uv`](https://github.com/astral-sh/uv):
 
 ```bash
-pip install -r requirements.txt
-``` 
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+uv pip install -r docker/requirements.txt
+```

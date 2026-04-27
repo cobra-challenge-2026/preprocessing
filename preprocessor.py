@@ -1,10 +1,13 @@
 import os
+import shutil
 import logging
-import SimpleITK as sitk
+import copy
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
-import yaml
 
-import torch
+import numpy as np
+import SimpleITK as sitk
+import yaml
 
 import utils.io as io
 import utils.recon as recon
@@ -15,14 +18,11 @@ import utils.vis as vis
 import utils.reg as reg
 import utils.seg as seg
 
-import yaml
-import copy
-
 if TYPE_CHECKING:
     from utils.config import PatientConfig
 
 class PreProcessor:
-    def __init__(self, patient_id: str, config: 'PatientConfig', device: torch.device = torch.device('cuda:0'), skip_recon: bool = False):
+    def __init__(self, patient_id: str, config: 'PatientConfig', device: str = 'cuda:0', skip_recon: bool = False):
         self.id = patient_id
         self.config = config
         self.logger = logging.getLogger(f'PreProcessor.{self.id}')
@@ -74,6 +74,18 @@ class PreProcessor:
     
     def fov_cbct_path(self) -> str:
         return os.path.join(self.config.data.output, f'fov_cbct.mha')
+
+    def overview_path_s3(self) -> str:
+        return os.path.join(self.config.data.output, f'overview_{self.id}_simulated.png')
+
+    def overview_path_s3_projections(self) -> str:
+        return os.path.join(self.config.data.output, f'overview_{self.id}_projections.png')
+
+    def cbct_simulated_path(self) -> str:
+        return os.path.join(self.config.data.output, f'cbct_simulated.mha')
+
+    def projections_simulated_path(self) -> str:
+        return os.path.join(self.config.data.output, f'projections_simulated.mha')
     
     def ct_def_path(self) -> str:
         return os.path.join(self.config.data.output, f'ct_def.mha')
@@ -230,7 +242,7 @@ class PreProcessor:
             self.cbct_rtk = recon.fdk(
                 projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
-                gpu = False if self.device.type == 'cpu' else True,
+                gpu = False if self.device == 'cpu' else True,
                 spacing = [1.0, 1.0, 1.0],
                 size = [410, 264, 410],
                 padding = 0.2,
@@ -423,17 +435,28 @@ class PreProcessor:
             cbct = self.cbct_clinical,
             cbct_fov = self.fov_cbct
         )
-        self.dvf = sitk.Cast(self.dvf, sitk.sitkVectorFloat64)
+        self.dvf = reg.extend_vector_field_outside_mask(
+            self.dvf,
+            self.fov_cbct,
+            reference_image=self.ct,
+        )
         dvf_for_transform = sitk.Image(self.dvf)   # deep copy
         dfield_tx = sitk.DisplacementFieldTransform(dvf_for_transform)
-        fov_cbct_deformed = sitk.Resample(self.fov_cbct, self.fov_cbct, dfield_tx, sitk.sitkNearestNeighbor, 0)
-        fov_intersection = sitk.And(self.fov_cbct, fov_cbct_deformed)
-        fov_intersection = sitk.Cast(fov_intersection, sitk.sitkInt16)
-        fov_intersection_full = sitk.Resample(fov_intersection, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_cbct_full = sitk.Resample(self.fov_cbct, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_cbct_deformed = sitk.Resample(fov_cbct_full, fov_cbct_full, dfield_tx, sitk.sitkNearestNeighbor, 0)
+        fov_intersection_full = sitk.And(fov_cbct_full, fov_cbct_deformed)
+        fov_intersection_full = sitk.Cast(fov_intersection_full, sitk.sitkInt16)
         fov_intersection_full = sitk.BinaryErode(fov_intersection_full, (1,1,1))
         ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct_rigid_full, sitk.Transform(), sitk.sitkLinear, -1024)
+        ct_def_extended = reg.apply_transforms(
+            ct=self.ct,
+            rigid_transform=self.rigid_transform,
+            dvf=self.dvf,
+            default_value=-1024,
+            interpolator=sitk.sitkLinear,
+        )
         self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
-        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * self.ct_rigid_full
+        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * ct_def_extended
         self.ct_def = sitk.Clamp(self.ct_def, lowerBound=-1024, upperBound=3071)
         self.ct_def_masked = sitk.Clamp(self.ct_def_masked, lowerBound=-1024, upperBound=3071)
         self.cbct_clinical = sitk.Clamp(self.cbct_clinical, lowerBound=-1024, upperBound=3071)
@@ -461,6 +484,145 @@ class PreProcessor:
         )
         self.logger.info("Overview visualization generated.")
     
+        
+    ### --- Stage 3: simulate projections from deformed CT --- ###
+
+    def run_stage3(self):
+        self.logger.info("Starting stage 3 preprocessing...")
+        if self.patient_complete_s3():
+            self.logger.info("All stage 3 files already exist. Skipping patient...")
+        else:
+            self.load_data_s3()
+            self.simulate_projections()
+            self.generate_overview_s3()
+            self.generate_overview_s3_projections()
+            self.logger.info("Stage 3 preprocessing completed.")
+
+    def load_data_s3(self):
+        self.logger.info("Loading data for stage 3...")
+        self.ct_def = io.read_image(self.ct_def_path())
+        self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.logger.info("Data for stage 3 loaded.")
+
+    def simulate_projections(self):
+        from simcbctgenerator import MotionConfig, ProjectionPipeline, Vendor
+
+        self.logger.info("Generating simulated projections...")
+        output_dir = Path(self.config.data.output)
+        pipeline = ProjectionPipeline(
+            vendor=Vendor.from_value(self.config.general.vendor),
+            correct_contrast_media=self.config.settings.correct_contrast_media,
+            gpu=self.device != 'cpu',
+        )
+
+        _, system_config = pipeline.generate_projections(
+            ct_image=self.ct_def,
+            output_dir=output_dir,
+            cbct_image=self.cbct_clinical,
+            geometry_xml=self.cbct_geometry_path(),
+            metadata_yaml=self.metadata_path(),
+            random_motion_type=MotionConfig.MotionType.PELVIS,
+            random_motion_amplitude_range=(2.0, 7.0), #motion displacement +/- mm
+            random_motion_frequency_range=(12.0, 20.0), #breathing frequency
+            random_motion_uncertainty_range=(0.01, 0.02), #random perturbation 
+        )
+
+        proj_dir = output_dir / "drr_temp"
+        self.logger.info("Reconstructing simulated CBCT from generated projections...")
+        pipeline.reconstruct(
+            proj_dir=proj_dir,
+            system_config=system_config,
+            output_dir=output_dir,
+        )
+
+        missing_outputs = [
+            str(path) for path in (
+                Path(self.projections_simulated_path()),
+                Path(self.cbct_simulated_path()),
+            ) if not path.is_file()
+        ]
+        if missing_outputs:
+            raise FileNotFoundError(
+                "simcbctgenerator did not produce the expected stage 3 outputs: "
+                + ", ".join(missing_outputs)
+            )
+
+        if proj_dir.is_dir():
+            shutil.rmtree(proj_dir)
+
+        self.logger.info("Simulated projections and CBCT saved.")
+
+    def generate_overview_s3(self):
+        self.logger.info("Generating stage 3 overview visualization...")
+        cbct_simulated = io.read_image(self.cbct_simulated_path())
+        cbct_simulated.CopyInformation(self.cbct_clinical)
+        vis.generate_overview_deformed(
+            cbct_clinical=copy.deepcopy(self.cbct_clinical),
+            ct_deformed=copy.deepcopy(cbct_simulated),
+            output_path=self.overview_path_s3(),
+            patient_ID=self.id,
+            image2_label="CBCT simulated",
+        )
+        self.logger.info("Stage 3 overview visualization generated.")
+
+    def generate_overview_s3_projections(self):
+        self.logger.info("Generating stage 3 projection overview...")
+        geometry = io.read_geometry(self.cbct_geometry_path())
+        gantry_angles = [a * 180.0 / np.pi for a in geometry.GetGantryAngles()]
+
+        proj_real = sitk.GetArrayFromImage(io.read_image(self.cbct_projections_path())).astype(np.float32)
+        proj_sim = sitk.GetArrayFromImage(io.read_image(self.projections_simulated_path())).astype(np.float32)
+
+        if self.config.general.vendor.lower() == 'varian':
+            rotation = 'CW' if gantry_angles[20] < gantry_angles[30] else 'CC'
+            air_imgs, _ = recon.read_air_scans(self.config.data.airscans, rotation=rotation, return_sitk=False)
+            air = air_imgs[0].astype(np.float32)
+            eps = 1e-6
+            proj_real = -np.log(np.clip(proj_real / np.clip(air, eps, None), eps, None))
+            proj_sim = -np.log(np.clip(proj_sim, eps, None))
+
+        vis.generate_overview_projections(
+            proj_real=proj_real,
+            proj_sim=proj_sim,
+            gantry_angles=gantry_angles,
+            output_path=self.overview_path_s3_projections(),
+            patient_ID=self.id,
+        )
+        self.logger.info("Stage 3 projection overview generated.")
+
+    def patient_complete_s3(self) -> bool:
+        files_to_check = [
+            self.cbct_simulated_path(),
+            self.projections_simulated_path(),
+        ]
+        return all(os.path.isfile(f) for f in files_to_check)
+
+    def cleanup_s2(self):
+        files = [
+            self.ct_def_path(),
+            self.ct_def_masked_path(),
+            self.fov_cbct_path(),
+            self.dvf_path(),
+            self.rigid_transform_path(),
+            self.overview_path_s2(),
+        ]
+        for f in files:
+            if os.path.isfile(f):
+                os.remove(f)
+                self.logger.info(f"Deleted {f}")
+
+    def cleanup_s3(self):
+        files = [
+            self.cbct_simulated_path(),
+            self.projections_simulated_path(),
+            self.overview_path_s3(),
+            self.overview_path_s3_projections(),
+        ]
+        for f in files:
+            if os.path.isfile(f):
+                os.remove(f)
+                self.logger.info(f"Deleted {f}")
+
     ### --- Check if all necessary files exist after stage2 --- ###
     def patient_complete_s2(self) -> bool:
         """Checks if all essential files for the patient exist."""
@@ -473,4 +635,3 @@ class PreProcessor:
         ]
         return all(os.path.isfile(f) for f in files_to_check)
         
-

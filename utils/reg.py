@@ -22,6 +22,97 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
+def extend_vector_field_outside_mask(
+    dvf: sitk.Image,
+    valid_mask: sitk.Image,
+    reference_image: sitk.Image | None = None,
+) -> sitk.Image:
+    """
+    Smoothly extend a displacement field outside a valid support mask while
+    keeping the original vectors unchanged inside the mask.
+
+    The propagation primitive is imported directly from simcbctgenerator so the
+    implementation origin stays explicit.
+    """
+    try:
+        import cupy as cp
+        from simcbctgenerator.motion.custom_image_processing import (
+            IntegralVolumeGPU,
+            MotionFieldPropagation,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "Extending the DVF requires simcbctgenerator and its CuPy dependency "
+            "to be available in the active environment."
+        ) from exc
+
+    if reference_image is not None:
+        dvf = sitk.Resample(dvf, reference_image)
+        valid_mask = sitk.Resample(valid_mask, reference_image, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+
+    dvf = sitk.Cast(dvf, sitk.sitkVectorFloat32)
+    valid_mask = sitk.Cast(valid_mask, sitk.sitkUInt8)
+
+    valid_np = sitk.GetArrayFromImage(valid_mask) > 0
+    if valid_np.all():
+        return sitk.Cast(dvf, sitk.sitkVectorFloat64)
+    if not valid_np.any():
+        raise ValueError("The valid mask does not contain any voxels for DVF propagation.")
+
+    eroded_mask = sitk.BinaryErode(valid_mask, [1, 1, 1], sitk.sitkBall)
+    border_mask = sitk.Cast(valid_mask > 0, sitk.sitkUInt8) - sitk.Cast(eroded_mask > 0, sitk.sitkUInt8)
+    border_np = sitk.GetArrayFromImage(border_mask) > 0
+    if not border_np.any():
+        raise ValueError("No border shell voxels found for DVF propagation.")
+
+    distance_img = sitk.SignedMaurerDistanceMap(
+        border_mask,
+        insideIsPositive=False,
+        squaredDistance=False,
+        useImageSpacing=False,
+    )
+    distance_np = np.abs(sitk.GetArrayFromImage(distance_img).astype(np.float32))
+
+    dvf_np = sitk.GetArrayFromImage(dvf).astype(np.float32)
+    dvf_seed_np = np.zeros_like(dvf_np, dtype=np.float32)
+    dvf_seed_np[border_np] = dvf_np[border_np]
+
+    spacing_zyx = (1.0, 1.0, 1.0)
+
+    comp_x_cp = cp.ascontiguousarray(cp.asarray(dvf_seed_np[..., 0]))
+    comp_y_cp = cp.ascontiguousarray(cp.asarray(dvf_seed_np[..., 1]))
+    comp_z_cp = cp.ascontiguousarray(cp.asarray(dvf_seed_np[..., 2]))
+    valid_cp = cp.ascontiguousarray(cp.asarray(border_np.astype(np.float32)))
+    distance_cp = cp.ascontiguousarray(cp.asarray(distance_np))
+
+    int_vol_x_cp = IntegralVolumeGPU.computeIntegralVolume(comp_x_cp)
+    int_vol_y_cp = IntegralVolumeGPU.computeIntegralVolume(comp_y_cp)
+    int_vol_z_cp = IntegralVolumeGPU.computeIntegralVolume(comp_z_cp)
+    int_vol_valid_cp = IntegralVolumeGPU.computeIntegralVolume(valid_cp)
+
+    out_x_cp = cp.empty_like(comp_x_cp)
+    out_y_cp = cp.empty_like(comp_y_cp)
+    out_z_cp = cp.empty_like(comp_z_cp)
+
+    MotionFieldPropagation.propagateMotionField(
+        int_vol_x_cp,
+        int_vol_y_cp,
+        int_vol_z_cp,
+        int_vol_valid_cp,
+        distance_cp,
+        out_x_cp,
+        out_y_cp,
+        out_z_cp,
+        spacing_zyx,
+    )
+
+    dvf_extended_np = cp.asnumpy(cp.stack((out_x_cp, out_y_cp, out_z_cp), axis=3))
+    dvf_extended_np[valid_np] = dvf_np[valid_np]
+
+    dvf_extended = sitk.GetImageFromArray(dvf_extended_np.astype(np.float64), isVector=True)
+    dvf_extended.CopyInformation(dvf)
+    return dvf_extended
+
 def rigid_registration(
     fixed: sitk.Image,
     moving: sitk.Image,
@@ -278,7 +369,7 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
     Returns:
     Tuple[sitk.Image, sitk.Image]: A tuple containing the registered image and the displacement field.
     """
-    with tempfile.TemporaryDirectory(prefix = "impact_", dir = output_dir) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix = "impact_", dir = output_dir, ignore_cleanup_errors=True) as temp_dir:
         fixed_path = os.path.join(temp_dir, "fixed.mha")
         moving_path = os.path.join(temp_dir, "moving.mha")
 
@@ -419,4 +510,3 @@ def CT_MR_params_B_TH():
         'sigma': 0.2
     }
     return params
-
