@@ -22,11 +22,12 @@ if TYPE_CHECKING:
     from utils.config import PatientConfig
 
 class PreProcessor:
-    def __init__(self, patient_id: str, config: 'PatientConfig', device: torch.device = torch.device('cuda:0')):
+    def __init__(self, patient_id: str, config: 'PatientConfig', device: torch.device = torch.device('cuda:0'), skip_recon: bool = False):
         self.id = patient_id
         self.config = config
         self.logger = logging.getLogger(f'PreProcessor.{self.id}')
         self.device = device
+        self.skip_recon = skip_recon
 
         # Data placeholders
         self.cbct_projections: Optional[sitk.Image] = None
@@ -93,7 +94,10 @@ class PreProcessor:
             self.logger.info("All preprocessing files already exist. Skipping patient...")
         else:
             self.load_data()
-            self.recon_cbct()
+            if not self.skip_recon:
+                self.recon_cbct()
+            else:
+                self.placeholder_cbct()
             self.extract_metadata()
             self.generate_overview()
             self.write_data()
@@ -269,6 +273,26 @@ class PreProcessor:
             self.cbct_rtk = reg.shift_origin(self.cbct_rtk, translation)
             self.cbct_rtk = img.rtk_to_HU(self.cbct_rtk)
             self.cbct_clinical = reg.shift_origin(self.cbct_clinical, translation)
+        
+        self.logger.info("CBCT reconstruction completed.")
+    
+    def placeholder_cbct(self):
+        self.logger.info("Creating placeholder CBCT...")
+        if self.config.general.vendor.lower() == 'elekta':
+            self.logger.error("Placeholder CBCT is not implemented for Elekta. Please run with --skip_recon only for Varian data.")
+                        
+        elif self.config.general.vendor.lower() == 'varian':
+            translation = reg.rigid_registration(
+                fixed = self.ct,
+                moving = self.cbct_clinical,
+                translation_only = True
+            )
+            self.cbct_clinical = reg.shift_origin(self.cbct_clinical, translation)
+            # create a placeholder CBCT with the same size and spacing as the clinical CBCT, but with all values set to 0
+            self.cbct_rtk = sitk.Image(self.cbct_clinical.GetSize(), sitk.sitkInt16)
+            self.cbct_rtk.SetSpacing(self.cbct_clinical.GetSpacing())
+            self.cbct_rtk.SetOrigin(self.cbct_clinical.GetOrigin())
+            self.cbct_rtk.SetDirection(self.cbct_clinical.GetDirection())
         
         self.logger.info("CBCT reconstruction completed.")
     

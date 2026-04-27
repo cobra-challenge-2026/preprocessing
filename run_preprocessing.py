@@ -15,13 +15,14 @@ if __name__ == "__main__":
     parser.add_argument('-device', '-d', type=str, default='cpu', help='Device to use for processing, e.g. cpu for CPU, cuda:0 for GPU 0,')
     parser.add_argument('-stage', '-s', type=int, default=1, help='Preprocessing stage to run (1 or 2). ')
     parser.add_argument('--overview', action='store_true', help='Generate an overview image without running the preprocessing pipeline.')
+    parser.add_argument('--skip_recon', action='store_true', help='Skip rtk CBCT reconstruction.')
     args = parser.parse_args()
     configs = load_patient_configs(args.config_file)
 
     for patient_id, config in configs.items():
         try:
             logger.info(f"--- Processing patient {patient_id} ---")
-            processor = PreProcessor(patient_id, config, device=torch.device(args.device))
+            processor = PreProcessor(patient_id, config, device=torch.device(args.device), skip_recon=args.skip_recon)
             if args.stage == 1:
                 if args.overview:
                     processor.generate_overview_image()
