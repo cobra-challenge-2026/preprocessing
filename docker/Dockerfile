@@ -30,9 +30,8 @@ RUN if [ "$USE_CUDA" = "true" ]; then \
         uv pip install --system --no-cache-dir itk-rtk ; \
     fi
 
-RUN uv pip uninstall --system SimpleITK
+RUN uv pip uninstall --system -y SimpleITK SimpleITK-SimpleElastix simpleitk simpleitk-simpleelastix
 RUN uv pip install --system --no-cache-dir SimpleITK-SimpleElastix
-
 WORKDIR /workspace
 COPY . .
 CMD ["bash"]
