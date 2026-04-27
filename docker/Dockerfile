@@ -10,6 +10,16 @@ RUN apt install cmake -y
 COPY docker/requirements.txt .
 RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 RUN pip install --no-cache-dir -r requirements.txt
+
+ARG USE_CUDA=true
+ENV USE_CUDA=${USE_CUDA}
+
+RUN if [ "$USE_CUDA" = "true" ]; then \
+        pip install itk-rtk-cuda124 ; \
+    else \
+        pip install itk-rtk ; \
+    fi
+
 RUN pip uninstall -y SimpleITK
 RUN pip install SimpleITK-SimpleElastix
 
