@@ -318,7 +318,7 @@ def generate_overview_deformed(
     if "raw" in vis_modes:
         columns.append(("CBCT clinical", lambda ax, v: ax.imshow(
             _get_slice(cbct_arr, v), cmap="gray", vmin=bg_cbct, vmax=hi_cbct, aspect=aspect_for_view[v])))
-        columns.append(("CT deformed", lambda ax, v: ax.imshow(
+        columns.append((image2_label, lambda ax, v: ax.imshow(
             _get_slice(ct_arr, v), cmap="gray", vmin=bg_ct, vmax=hi_ct, aspect=aspect_for_view[v])))
 
     if "diff" in vis_modes:
