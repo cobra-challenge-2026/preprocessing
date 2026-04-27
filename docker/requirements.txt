@@ -6,6 +6,7 @@ TotalSegmentator
 ipykernel
 pydantic
 numba
+cupy-cuda12x==13.4.1
 itk-rtk-cuda124
 xmltodict
 xdrt
