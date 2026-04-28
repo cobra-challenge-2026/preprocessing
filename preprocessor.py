@@ -271,7 +271,7 @@ class PreProcessor:
             self.cbct_rtk = recon.fdk(
                 projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
-                gpu = False if self.device.type == 'cpu' else True,
+                gpu = False if self.device == 'cpu' else True,
                 padding = 0.5,
                 hann = 0.5,
                 hannY = 0.5,
