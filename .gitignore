@@ -11,3 +11,4 @@ configs/generate_umcu_config.py
 *.tar
 */checkpoint
 configs/umcu_config_s2.yaml
+logs/
