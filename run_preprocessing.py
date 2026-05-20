@@ -48,6 +48,9 @@ if __name__ == "__main__":
 
                 elif stage == 3:
                     processor.run_stage3()
+                    
+                elif stage == 0:
+                    processor.run_stage_recon()
             logger.info(f"--- Successfully finished patient {patient_id} ---")
 
         except Exception as e:

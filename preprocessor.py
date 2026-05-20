@@ -115,6 +115,12 @@ class PreProcessor:
             self.write_data()
             self.logger.info("Preprocessing completed.")
     
+    def run_stage_recon(self):
+        self.logger.info("Starting reconstruction stage...")
+        self.load_data_recon()
+        self.recon_cbct()
+        self.write_data_recon()
+
     def run_stage2(self):
         self.logger.info("Starting stage 2 preprocessing...")
         if self.patient_complete_s2():
@@ -211,8 +217,7 @@ class PreProcessor:
                     )
                 self.logger.info("Correcting I0...")
                 self.cbct_projections_cor = recon.correct_i0_varian(
-                    projections = self.cbct_projections_cor, 
-                    projections_header = header,
+                    projections = self.cbct_projections_cor,
                     air_scans_dir = self.config.data.airscans,
                     geometry = self.cbct_geometry,
                     scan_xml_path= self.config.data.scanxml,
@@ -220,8 +225,7 @@ class PreProcessor:
             else:
                 self.logger.info("Correcting I0...")
                 self.cbct_projections_cor = recon.correct_i0_varian(
-                    projections = self.cbct_projections, 
-                    projections_header = header,
+                    projections = self.cbct_projections,
                     air_scans_dir = self.config.data.airscans,
                     geometry = self.cbct_geometry,
                     scan_xml_path= self.config.data.scanxml,
@@ -234,6 +238,28 @@ class PreProcessor:
         
         
         self.logger.info("Images loaded.")
+    
+    def load_data_recon(self):
+        self.logger.info("Loading data for reconstruction...")
+        self.ct = io.read_image(os.path.join(self.config.data.output, f'ct.mha'))
+        self.cbct_clinical = io.read_image(os.path.join(self.config.data.output, f'cbct_clinical.mha'))
+        self.cbct_projections = io.read_image(os.path.join(self.config.data.output, f'projections.mha'))
+        self.cbct_projections = sitk.Cast(self.cbct_projections, sitk.sitkFloat32)
+        self.cbct_geometry = io.read_geometry(os.path.join(self.config.data.output, f'geometry.xml'))
+        self.cbct_projections_cor = copy.deepcopy(self.cbct_projections)
+        self.cbct_projections_cor = recon.correct_scatter_varian(
+                    projections = self.cbct_projections,
+                    geometry = self.cbct_geometry,
+                    scattercorxml_path = self.config.data.scattercorxml,
+                    airscans_path = self.config.data.airscans
+                    )
+        self.cbct_projections_cor = recon.correct_i0_varian(
+                    projections = self.cbct_projections_cor, 
+                    air_scans_dir = self.config.data.airscans,
+                    geometry = self.cbct_geometry,
+                    scan_xml_path= self.config.data.scanxml,
+                    )
+        
     
     ### --- Reconstruct CBCT using RTK FDK --- ###
     def recon_cbct(self):
@@ -264,27 +290,41 @@ class PreProcessor:
                         )
                     self.cbct_rtk = reg.shift_origin(self.cbct_rtk, translation)
                     self.cbct_rtk = img.rtk_to_HU(self.cbct_rtk)
-                    self.cbct_clinical = reg.shift_origin(self.cbct_clinical, translation)
-                        
-        
+                    self.cbct_clinical = reg.shift_origin(self.cbct_clinical, translation)  
+                    
+                                    
         elif self.config.general.vendor.lower() == 'varian':
+            spacing = self.cbct_clinical.GetSpacing()
+            size = self.cbct_clinical.GetSize()
+            recon_order = (0, 2, 1)
+            recon_spacing = tuple(spacing[i] for i in recon_order)
+            recon_size = tuple(size[i] for i in recon_order)
+            # fix recon for large projections which violate parker weighting
+            if self.cbct_projections_cor.GetSize()[0] * self.cbct_projections_cor.GetSpacing()[0] > 850:
+                self.cbct_projections_cor = self.cbct_projections_cor[128:-128,:,:]
             self.cbct_rtk = recon.fdk(
                 projections = self.cbct_projections_cor, 
                 geometry = self.cbct_geometry,
+                size = recon_size,
+                spacing = recon_spacing,
                 gpu = False if self.device == 'cpu' else True,
                 padding = 0.5,
                 hann = 0.5,
                 hannY = 0.5,
             )
+            self.fov_cbct = seg.get_fov_rtk(self.cbct_rtk, self.cbct_projections_cor, self.cbct_geometry)
             self.cbct_rtk = img.fix_array_order(self.cbct_rtk, order=(1,0,2), flip=(0,1))
+            self.fov_cbct = img.fix_array_order(self.fov_cbct, order=(1,0,2), flip=(0,1))
             translation = reg.rigid_registration(
                 fixed = self.ct,
                 moving = self.cbct_clinical,
                 translation_only = True
             )
             self.cbct_rtk = reg.shift_origin(self.cbct_rtk, translation)
+            self.fov_cbct = reg.shift_origin(self.fov_cbct, translation)
             self.cbct_rtk = img.rtk_to_HU(self.cbct_rtk)
             self.cbct_clinical = reg.shift_origin(self.cbct_clinical, translation)
+            #sitk.WriteImage(self.cbct_projections_cor, os.path.join(self.config.data.output, f'cbct_projections_cor.mha'))
         
         self.logger.info("CBCT reconstruction completed.")
     
@@ -356,6 +396,7 @@ class PreProcessor:
         self.ct = io.read_image(self.ct_path())
         self.cbct_clinical = io.read_image(self.cbct_clinical_path())
         self.cbct_rtk = io.read_image(self.cbct_rtk_path())
+        self.fov_cbct = io.read_image(self.fov_cbct_path())
         self.metadata = yaml.safe_load(open(self.metadata_path(), 'r'))
         self.logger.info("Data for overview loaded.")
     
@@ -369,6 +410,7 @@ class PreProcessor:
         io.save_image(self.cbct_rtk, self.cbct_rtk_path(), dtype='int16')
         io.save_image(self.ct, self.ct_path(), dtype='int16')
         io.save_image(self.cbct_clinical, self.cbct_clinical_path(), dtype='int16')
+        io.save_image(self.fov_cbct, self.fov_cbct_path(), dtype='uint16')
         if self.config.general.vendor.lower() == 'elekta':
             yaml.dump(self.reconstruction_ini, open(self.reconstruction_ini_path(), 'w'))
         yaml.dump(self.metadata, open(self.metadata_path(), 'w'))
@@ -377,6 +419,17 @@ class PreProcessor:
                 self.config.data.calibration_dir, 
                 os.path.join(self.config.data.output, 'Calibrations')
             )
+        self.logger.info("Preprocessed data saved.")
+    
+    def write_data_recon(self):
+        self.logger.info("Saving preprocessed data to files...")
+        if not os.path.exists(self.config.data.output):
+            os.makedirs(self.config.data.output)
+        ref_image = io.read_image(self.cbct_clinical_path())
+        self.cbct_rtk.SetOrigin(ref_image.GetOrigin())
+        self.fov_cbct.SetOrigin(ref_image.GetOrigin())
+        io.save_image(self.cbct_rtk, self.cbct_rtk_path(), dtype='int16')
+        io.save_image(self.fov_cbct, self.fov_cbct_path(), dtype='uint16')
         self.logger.info("Preprocessed data saved.")
     
     ### --- Check if all necessary files exist after preprocessing --- ###
@@ -397,6 +450,8 @@ class PreProcessor:
         self.logger.info("Loading data for stage 2...")
         self.ct = io.read_image(self.ct_path())
         self.cbct_clinical = io.read_image(self.cbct_clinical_path())
+        self.cbct_rtk = io.read_image(self.cbct_rtk_path())
+        self.fov_cbct = io.read_image(self.fov_cbct_path())
         self.logger.info("Data for stage 2 loaded.")
         
     def load_data_overview(self):
@@ -411,28 +466,36 @@ class PreProcessor:
     def run_deformable(self):
         self.logger.info("Running deformable registration...")
         self.ct_rigid, self.rigid_transform = reg.rigid_elastix(
-                        fixed = self.cbct_clinical,
+                        fixed = self.cbct_rtk,
                         moving = self.ct,
                         parameter_file='/code/configs/rigid_params.txt',
-                        default_value=-1024
+                        default_value=-1024,
+                        output_dir=self.config.data.output
                     )
         self.ct_def_small, _, self.dvf = reg.deformable_impact(
-                        fixed = self.cbct_clinical,
-                        moving = self.ct_rigid,
+                        fixed = self.cbct_rtk,
+                        moving = self.ct,
                         output_dir = self.config.data.output
                     )
         self.ct_rigid_full = sitk.Resample(self.ct, self.ct, self.rigid_transform, sitk.sitkLinear, -1024)  
-        self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
+        if self.config.general.vendor.lower() == 'varian':
+            self.fov_cbct = self.fov_cbct
+        else:
+            self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
         self.logger.info("Deformable registration completed.")
     
     def postprocess_deformed(self):
         self.logger.info("Postprocessing deformed CT...")
         if self.fov_cbct is None:
-            self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
+            raise ValueError("FOV mask for CBCT is not available. Cannot postprocess deformed CT.")
+            # if self.config.general.vendor.lower() == 'varian':
+            #     self.fov_cbct = seg.get_cbct_fov_varian(self.cbct_clinical, 2)
+            # else:
+            #     self.fov_cbct = seg.get_cbct_fov(self.cbct_clinical, 2)
         vct_gen = vc.VirtualCTCreator(correct_cbct_before_virtual_ct=True, sct_model_path='/code/configs/checkpoint',sct_max_copy_hu=100)
         self.ct_def_masked, cbct_for_blending = vct_gen.create(
             deformed_ct = self.ct_def_small,
-            cbct = self.cbct_clinical,
+            cbct = self.cbct_rtk,
             cbct_fov = self.fov_cbct
         )
         self.dvf = reg.extend_vector_field_outside_mask(
@@ -447,14 +510,24 @@ class PreProcessor:
         fov_intersection_full = sitk.And(fov_cbct_full, fov_cbct_deformed)
         fov_intersection_full = sitk.Cast(fov_intersection_full, sitk.sitkInt16)
         fov_intersection_full = sitk.BinaryErode(fov_intersection_full, (1,1,1))
+        sitk.WriteImage(fov_intersection_full, os.path.join(self.config.data.output, f'fov_intersection_full.mha'))
         ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct_rigid_full, sitk.Transform(), sitk.sitkLinear, -1024)
-        ct_def_extended = reg.apply_transforms(
-            ct=self.ct,
-            rigid_transform=self.rigid_transform,
-            dvf=self.dvf,
-            default_value=-1024,
-            interpolator=sitk.sitkLinear,
-        )
+        if self.config.general.vendor.lower() == 'varian':
+            ct_def_extended = reg.apply_transforms(
+                ct=self.ct,
+                rigid_transform=sitk.Euler3DTransform(),
+                dvf=self.dvf,
+                default_value=-1024,
+                interpolator=sitk.sitkLinear,
+            )
+        else:
+            ct_def_extended = reg.apply_transforms(
+                ct=self.ct,
+                rigid_transform=self.rigid_transform,
+                dvf=self.dvf,
+                default_value=-1024,
+                interpolator=sitk.sitkLinear,
+            )
         self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
         self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * ct_def_extended
         self.ct_def = sitk.Clamp(self.ct_def, lowerBound=-1024, upperBound=3071)

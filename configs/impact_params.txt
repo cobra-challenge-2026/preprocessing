@@ -86,15 +86,15 @@
 (ImpactWriteFeatureMaps "false")
 
 // Elastix configuration
-(MaximumNumberOfIterations 250)
-(NumberOfSpatialSamples 2000)
+(MaximumNumberOfIterations 250 250 250)
+(NumberOfSpatialSamples 2000 2000 2000)
 (Transform "RecursiveBSplineTransform")
-(NumberOfResolutions 2)
+(NumberOfResolutions 3)
 (FinalGridSpacingInPhysicalUnits 16)
 (FixedImagePyramid "FixedGenericImagePyramid")
 (MovingImagePyramid "MovingGenericImagePyramid")
-(ImagePyramidRescaleSchedule 1 1 1 1 1 1 1 1 1)
-(ImagePyramidSmoothingSchedule 1 1 1 1 1 1 1 1 1)
+(ImagePyramidRescaleSchedule 2 2 2   1 1 1   1 1 1)
+(ImagePyramidSmoothingSchedule  2 2 2   1 1 1   1 1 1)
 // (ImagePyramidRescaleSchedule 1 1 1 1 1 1 1 1 1 1 1 1)
 // (ImagePyramidSmoothingSchedule 1 1 1 1 1 1 1 1 1 1 1 1)
 

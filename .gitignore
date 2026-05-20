@@ -12,3 +12,8 @@ configs/generate_umcu_config.py
 */checkpoint
 configs/umcu_config_s2.yaml
 logs/
+cbct_metadata_schema.json
+configs/generate_lyon_config.py
+configs/generate_ukk_config.py
+configs/impact_params_old.txt
+configs/lyon_config_s2.yaml
