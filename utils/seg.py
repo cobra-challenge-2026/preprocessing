@@ -10,7 +10,8 @@ from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from scipy import ndimage
 import numpy as np
 import utils.sct_generator as sct_gen
-
+import itk
+from itk import RTK as rtk
 
 import utils.reg as reg
 
@@ -109,6 +110,193 @@ def get_cbct_fov(
     mask.CopyInformation(image)
     return mask
 
+def get_fov_rtk(
+    rtk_recon: sitk.Image,
+    projections: sitk.Image,
+    geometry: rtk.ThreeDCircularProjectionGeometry,
+) -> sitk.Image:
+    
+    offsets_x = geometry.GetProjectionOffsetsX()
+    is_displaced = any(abs(offset) > 10.0 for offset in offsets_x)
+    
+    PixelType = itk.F
+    Dimension = 3
+    ImageType = itk.Image[PixelType, Dimension]
+
+    rtk_recon_itk = io.sitk_to_itk(rtk_recon)
+    projections_itk = io.sitk_to_itk(projections)
+
+    # Compute FOV mask
+    FOVFilter = rtk.FieldOfViewImageFilter[ImageType, ImageType].New()
+    FOVFilter.SetInput(0, rtk_recon_itk)
+    FOVFilter.SetProjectionsStack(projections_itk)
+    FOVFilter.SetGeometry(geometry)
+    FOVFilter.SetMask(True)
+    FOVFilter.SetDisplacedDetector(is_displaced)
+    FOVFilter.Update()
+
+    mask = FOVFilter.GetOutput()
+    mask = io.itk_to_sitk(mask)
+    
+    return mask
+
+def get_cbct_fov_varian(
+    image: sitk.Image,
+    margin_mm: float = 2.0,
+    threshold: float = -1000.0,
+    min_inside_voxels: int = 100,
+    square_fill_threshold: float = 0.90,
+) -> sitk.Image:
+    """
+    Create a CBCT FOV mask that can handle both circular and square/rectangular
+    FOV slices.
+    """
+    size = image.GetSize()        # (x, y, z)
+    spacing = image.GetSpacing()  # (x, y, z)
+    origin = image.GetOrigin()    # (x, y, z)
+
+    center_x = origin[0] + (size[0] - 1) * spacing[0] / 2.0
+    center_y = origin[1] + (size[1] - 1) * spacing[1] / 2.0
+
+    extent_x = size[0] * spacing[0]
+    extent_y = size[1] * spacing[1]
+    default_radius = max(min(extent_x, extent_y) / 2.0 - margin_mm, 0.0)
+
+    arr = sitk.GetArrayFromImage(image)  # shape: (z, y, x)
+    n_slices = arr.shape[0]
+
+    ix = np.arange(size[0])
+    iy = np.arange(size[1])
+    gx, gy = np.meshgrid(ix, iy)  # shape: (y, x)
+
+    px = origin[0] + gx * spacing[0]
+    py = origin[1] + gy * spacing[1]
+
+    dist_sq = (px - center_x) ** 2 + (py - center_y) ** 2
+
+    mask_arr = np.zeros_like(arr, dtype=np.uint8)
+
+    for s in range(n_slices):
+        geom = _detect_slice_fov_geometry(
+            arr[s],
+            spacing=spacing,
+            origin=origin,
+            threshold=threshold,
+            min_inside_voxels=min_inside_voxels,
+            margin_mm=margin_mm,
+            square_fill_threshold=square_fill_threshold,
+        )
+
+        if geom is None:
+            continue
+
+        if geom["type"] == "rect":
+            mask_arr[
+                s,
+                geom["ymin"]:geom["ymax"] + 1,
+                geom["xmin"]:geom["xmax"] + 1,
+            ] = 1
+
+        elif geom["type"] == "circle":
+            r = min(geom["radius_mm"], default_radius)
+            mask_arr[s] = (dist_sq <= r ** 2).astype(np.uint8)
+
+    mask = sitk.GetImageFromArray(mask_arr)
+    mask.CopyInformation(image)
+    return mask
+
+def _detect_slice_fov_geometry(
+    slice_arr: np.ndarray,
+    spacing,
+    origin,
+    threshold: float = -1000.0,
+    min_inside_voxels: int = 100,
+    margin_mm: float = 2.0,
+    square_fill_threshold: float = 0.90,
+    min_line_fraction: float = 0.05,
+):
+    """
+    Detect whether a slice FOV looks circular or rectangular/square.
+
+    Returns:
+        None if no reliable FOV.
+        dict with:
+            type: "circle" or "rect"
+            radius_mm for circle
+            xmin, xmax, ymin, ymax for rect, in pixel indices
+    """
+    inside = slice_arr > threshold
+    inside_count = np.count_nonzero(inside)
+
+    if inside_count < min_inside_voxels:
+        return None
+
+    row_counts = np.count_nonzero(inside, axis=1)
+    col_counts = np.count_nonzero(inside, axis=0)
+
+    if row_counts.max() == 0 or col_counts.max() == 0:
+        return None
+
+    # Robust rows/cols belonging to the FOV support.
+    row_keep = row_counts > (min_line_fraction * row_counts.max())
+    col_keep = col_counts > (min_line_fraction * col_counts.max())
+
+    ys = np.where(row_keep)[0]
+    xs = np.where(col_keep)[0]
+
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+
+    ymin, ymax = ys[0], ys[-1]
+    xmin, xmax = xs[0], xs[-1]
+
+    bbox = inside[ymin:ymax + 1, xmin:xmax + 1]
+    bbox_area = bbox.size
+
+    if bbox_area == 0:
+        return None
+
+    fill_ratio = np.count_nonzero(bbox) / bbox_area
+
+    # Convert margin from mm to pixels.
+    margin_x = int(np.ceil(margin_mm / spacing[0]))
+    margin_y = int(np.ceil(margin_mm / spacing[1]))
+
+    # If the threshold support fills most of the bounding box,
+    # it is probably rectangular/square rather than circular.
+    if fill_ratio >= square_fill_threshold:
+        xmin2 = min(max(xmin + margin_x, 0), slice_arr.shape[1] - 1)
+        xmax2 = max(min(xmax - margin_x, slice_arr.shape[1] - 1), 0)
+        ymin2 = min(max(ymin + margin_y, 0), slice_arr.shape[0] - 1)
+        ymax2 = max(min(ymax - margin_y, slice_arr.shape[0] - 1), 0)
+
+        if xmax2 <= xmin2 or ymax2 <= ymin2:
+            return None
+
+        return {
+            "type": "rect",
+            "xmin": xmin2,
+            "xmax": xmax2,
+            "ymin": ymin2,
+            "ymax": ymax2,
+            "fill_ratio": fill_ratio,
+        }
+
+    # Otherwise treat it as circular/elliptic-ish and estimate radius
+    # from the detected support bounds.
+    width_mm = (xmax - xmin + 1) * spacing[0]
+    height_mm = (ymax - ymin + 1) * spacing[1]
+    radius_mm = max(min(width_mm, height_mm) / 2.0 - margin_mm, 0.0)
+
+    if radius_mm <= 0:
+        return None
+
+    return {
+        "type": "circle",
+        "radius_mm": radius_mm,
+        "fill_ratio": fill_ratio,
+    }
+
 def _detect_slice_radius(
     slice_arr: np.ndarray,
     spacing: tuple,
@@ -178,7 +366,7 @@ def segment_lung(input:Optional[sitk.Image], **kwargs)->sitk.Image:
         "lung_lower_lobe_right",
     ]
     input_nib = io.sitk_to_nib(input)
-    ts_output = totalsegmentator(input_nib,output=None,task='total', roi_subset=lung_rois, quiet=True, device= 'gpu:0')
+    ts_output = totalsegmentator(input_nib,output=None,task='total', roi_subset=lung_rois, quiet=True, device= 'gpu')
     header = ts_output.header.extensions[0].get_content() # type: ignore
     header = xmltodict.parse(header)
     structures = io.nib_to_sitk(ts_output) 
