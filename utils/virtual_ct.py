@@ -55,19 +55,37 @@ class VirtualCTCreator:
         corrected_cbct.CopyInformation(cbct)
         return corrected_cbct
 
+    def _bone_mask(self, ct, lower_hu=150, min_size_voxels=5000):
+        mask = sitk.BinaryThreshold(
+            ct, lowerThreshold=lower_hu, upperThreshold=4000,
+            insideValue=1, outsideValue=0
+        )
+        mask = sitk.BinaryDilate(mask, [2, 2, 2])
+        mask = sitk.BinaryMorphologicalOpening(mask, [1, 1, 1], sitk.sitkBall)
+        cc = sitk.ConnectedComponent(mask)
+        cc = sitk.RelabelComponent(
+            cc, minimumObjectSize=min_size_voxels, sortByObjectSize=True
+        )
+        clean = sitk.BinaryThreshold(cc, 1, 10**9, 1, 0) 
+        clean = sitk.BinaryDilate(clean, [2, 2, 2])
+        return clean
+
     def create(
         self,
         deformed_ct: sitk.Image,
         cbct: sitk.Image,
         cbct_fov: sitk.Image,
+        use_cbct_body = False,
+        avoid_bone_region = False,
+        cbct_clinical_rigid: Optional[sitk.Image] = None,
     ) -> sitk.Image:
+        
         """Build a virtual CT by blending CT and CBCT in mismatch low-density regions."""
         deformed_ct_arr = sitk.GetArrayFromImage(deformed_ct)
         if self.correct_cbct_before_virtual_ct:
             cbct_for_blending = self._predict_corrected_cbct(cbct)
         else:
             cbct_for_blending = cbct
-
         cbct_arr = sitk.GetArrayFromImage(cbct_for_blending)
         cbct_arr_for_blending = cbct_arr
         if self.correct_cbct_before_virtual_ct and self.sct_max_copy_hu is not None:
@@ -75,12 +93,24 @@ class VirtualCTCreator:
 
         cbct_acs = seg.segment_cbct_ac(cbct, cbct_for_blending, fov_mask = cbct_fov)
         ct_body = seg.segment_skin(deformed_ct)
+        ct_body = sitk.Cast(ct_body, sitk.sitkUInt8)
+        ct_body = sitk.BinaryErode(ct_body, [2]*3)  # Erode to be conservative in defining body region in CT
+        ct_body[ct_body > 0] = 1
+        if use_cbct_body:
+            cbct_body = seg.segment_skin(cbct_clinical_rigid, modality = 'CT')
+            cbct_body.SetOrigin(cbct.GetOrigin())
+            cbct_body = sitk.Cast(cbct_body, sitk.sitkUInt8)
+            cbct_body[cbct_body > 0] = 1
+            cbct_body = sitk.BinaryErode(cbct_body, [2]*3)  # Erode to be conservative in defining body region in CBCT
+            cbct_acs = cbct_acs & cbct_body
         ct_acs = seg.segment_ct_ac(deformed_ct, ct_body)
+
+        bone_mask = self._bone_mask(deformed_ct)
         
         mismatch_image = cbct_acs != ct_acs
-
-        dilate_radius = int(self.blend_margin_mm / cbct_for_blending.GetSpacing()[0])
-        dilated = sitk.BinaryDilate(mismatch_image, [dilate_radius] * 3)
+        spacing = cbct_for_blending.GetSpacing()  # (x, y, z) in mm
+        dilate_radius = [max(1, int(np.ceil(self.blend_margin_mm / s))) for s in spacing]
+        dilated = sitk.BinaryDilate(mismatch_image, dilate_radius)
                 
         blend_mask = sitk.Cast(dilated, sitk.sitkFloat32)
         blend_mask = sitk.SmoothingRecursiveGaussian(blend_mask, self.blend_margin_mm/2)
@@ -89,8 +119,15 @@ class VirtualCTCreator:
         blend_region_arr = sitk.GetArrayFromImage(dilated).astype(bool)
         ct_body_arr = sitk.GetArrayFromImage(ct_body).astype(bool)
         cbct_fov_arr = sitk.GetArrayFromImage(cbct_fov).astype(bool)
-
-        blend_region_arr = blend_region_arr & ct_body_arr & cbct_fov_arr
+        if use_cbct_body:
+            cbct_body_arr = sitk.GetArrayFromImage(cbct_body).astype(bool)
+            blend_region_arr = blend_region_arr & ct_body_arr & cbct_fov_arr & cbct_body_arr
+        else:
+            blend_region_arr = blend_region_arr & ct_body_arr & cbct_fov_arr 
+        if avoid_bone_region:
+            bone_mask_arr = sitk.GetArrayFromImage(bone_mask).astype(bool)
+            blend_region_arr = blend_region_arr & ~bone_mask_arr
+        
         blend_mask_arr = blend_mask_arr * blend_region_arr
         
         virtual_ct_arr = (1 - blend_mask_arr) * deformed_ct_arr + blend_mask_arr * cbct_arr_for_blending

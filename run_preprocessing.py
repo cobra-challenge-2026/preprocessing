@@ -48,7 +48,10 @@ if __name__ == "__main__":
 
                 elif stage == 3:
                     processor.run_stage3()
-                    
+
+                elif stage == 4:
+                    processor.run_stage4()
+
                 elif stage == 0:
                     processor.run_stage_recon()
             logger.info(f"--- Successfully finished patient {patient_id} ---")

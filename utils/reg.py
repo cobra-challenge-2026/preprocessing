@@ -182,6 +182,22 @@ def shift_origin(
     image.SetOrigin(new_origin)
     return image
 
+def registration_residual(
+    transform: sitk.Transform,
+    fixed: sitk.Image,
+    moving: sitk.Image,
+) -> np.ndarray:
+    """
+    Translation left after removing the geometric-center difference between the
+    fixed and moving grids. The registration is initialized by aligning grid
+    centers, so this residual is the physical misalignment of the image contents.
+    """
+    center_fixed = np.array(fixed.TransformContinuousIndexToPhysicalPoint(
+        [(s - 1) / 2.0 for s in fixed.GetSize()]))
+    center_moving = np.array(moving.TransformContinuousIndexToPhysicalPoint(
+        [(s - 1) / 2.0 for s in moving.GetSize()]))
+    return np.asarray(transform.GetOffset()) - (center_moving - center_fixed)
+
 def run_deformable(
     fixed: sitk.Image | None = None,
     moving: sitk.Image | None = None,

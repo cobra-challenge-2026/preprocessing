@@ -12,7 +12,7 @@ def run_registration(fixed_path: str, moving_path: str, output_dir: str):
         "-m", moving_path,
         "-p", "/code/configs/impact_params.txt",
         "-out", output_dir,
-        "-threads", "12"
+        "-threads", "128"
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
