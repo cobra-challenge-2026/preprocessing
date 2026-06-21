@@ -108,8 +108,10 @@
 // Maximum number of iterations in each resolution level:
 // 200-500 works usually fine for rigid registration.
 // For more robustness, you may increase this to 1000-2000.
-(MaximumNumberOfIterations 500 250 50 30)
+(MaximumNumberOfIterations 1000 1000 1000 1000)
 //(MaximumNumberOfIterations 100 100 30 30)
+(MaximumStepLength 200.0 100.0 5.0 1.0)
+(SP_A 10000.000000 1000.000000 100.000000 1.000000 )
 
 
 // The step size of the optimizer, in mm. By default the voxel size is used.
@@ -126,17 +128,17 @@
 // With an AdaptiveStochasticGradientDescent optimizer,
 // in combination with the two options below, around 2000
 // samples may already suffice.
-(NumberOfSpatialSamples 3000)
+(NumberOfSpatialSamples 4096)
 //(NumberOfSpatialSamples 2048)
 
 // Refresh these spatial samples in every iteration, and select
 // them randomly. See the manual for information on other sampling
 // strategies.
-//(NewSamplesEveryIteration "true")
-//(ImageSampler "RandomCoordinate")
+(NewSamplesEveryIteration "true")
+(ImageSampler "RandomCoordinate")
 //(ImageSampler "Random")
 //(ImageSampler "Full")
-(ImageSampler "Grid")
+//(ImageSampler "Grid")
 (SampleGridSpacing 4 4 4 2)
 (MaximumNumberOfSamplingAttempts 20)
 (RequiredRatioOfValidSamples 0.045)

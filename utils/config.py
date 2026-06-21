@@ -27,12 +27,13 @@ class SettingsConfig(BaseModel):
     correct_orientation: bool = False
     correct_scatter: bool = False
     correct_contrast_media: bool = False
+    remove_couch: bool = False
 
 class PatientConfig(BaseModel):
     data: DataConfig
     general: GeneralConfig
     settings: SettingsConfig = SettingsConfig()
-
+    
 def load_patient_configs(config_path: str) -> Dict[str, PatientConfig]:
     with open(config_path, "r") as f:
         raw_configs = yaml.safe_load(f)

@@ -499,3 +499,231 @@ def generate_overview_projections(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
+
+def generate_final_overview(
+    cbct_clinical: sitk.Image | None,
+    cbct_rtk: sitk.Image,
+    cbct_simulated: sitk.Image | None,
+    ct_def_masked: sitk.Image | None,
+    fov_cbct: sitk.Image | None,
+    proj_real: np.ndarray,
+    proj_sim: np.ndarray,
+    gantry_angles: list,
+    output_path: str,
+    patient_ID: str,
+    target_angles: list = [0, 45, 90],
+    checkerboard_tile: int = 32,
+) -> None:
+    """
+    Generate a single final-overview PNG combining the volumetric reconstructions
+    and the projection comparison.
+
+    The top block shows three orientations (axial / sagittal / coronal) of five
+    panels, all resampled onto the CBCT RTK grid:
+        1. CBCT clinical
+        2. CBCT rtk, with the FOV mask drawn as a red outline
+        3. CBCT simulated
+        4. CT deformed (masked)
+        5. Checkerboard of CBCT rtk vs. CT deformed (intensity matched)
+
+    The bottom block shows the real and simulated projections at ``target_angles``.
+
+    Parameters
+    ----------
+    cbct_clinical, cbct_rtk, cbct_simulated, ct_def_masked : sitk.Image
+        Volumes to display. ``cbct_rtk`` is used as the reference grid; the others
+        are resampled onto it. ``None`` panels are left blank. Pass copies if the
+        caller needs to keep the originals unmodified (values < -1024 are clamped).
+    fov_cbct : sitk.Image, optional
+        CBCT field-of-view mask, drawn as a red contour over the RTK panel. If
+        ``None``, the full volume is treated as in-FOV.
+    proj_real, proj_sim : np.ndarray
+        Real (I0-corrected) and simulated projections, shape [N, H, W].
+    gantry_angles : list
+        Gantry angle in degrees for each projection, length N.
+    output_path : str
+        Path to save the overview PNG.
+    patient_ID : str
+        Patient identifier shown on each panel.
+    target_angles : list
+        Gantry angles (degrees) to display for the projections. Default [0, 45, 90].
+    checkerboard_tile : int
+        Tile size in pixels for the checkerboard panel.
+    """
+    reference = cbct_rtk
+
+    def _res(im, interp=sitk.sitkLinear, default=-1024.0):
+        if im is None:
+            return None
+        return sitk.Resample(im, reference, sitk.Transform(), interp, default)
+
+    # ── Resample everything onto the RTK grid ────────────────────────────
+    rtk_im = cbct_rtk
+    clin_im = _res(cbct_clinical)
+    sim_im = _res(cbct_simulated)
+    ctd_im = _res(ct_def_masked)
+    fov_im = _res(fov_cbct, sitk.sitkNearestNeighbor, 0)
+
+    for im in (rtk_im, clin_im, sim_im, ctd_im):
+        if im is not None:
+            im[im < -1024] = -1024
+
+    def _arr(im):
+        return sitk.GetArrayFromImage(im).astype(float) if im is not None else None
+
+    rtk_a = _arr(rtk_im)
+    clin_a = _arr(clin_im)
+    sim_a = _arr(sim_im)
+    ctd_a = _arr(ctd_im)
+    fov_a = (
+        sitk.GetArrayFromImage(fov_im).astype(bool)
+        if fov_im is not None
+        else np.ones_like(rtk_a, dtype=bool)
+    )
+
+    def _win(a):
+        if a is None:
+            return 0.0, 1.0
+        return np.percentile(a, 0.1), np.percentile(a, 99.9)
+
+    bg_rtk, hi_rtk = _win(rtk_a)
+    bg_clin, hi_clin = _win(clin_a)
+    bg_sim, hi_sim = _win(sim_a)
+    bg_ctd, hi_ctd = _win(ctd_a)
+
+    # Intensity-match CT deformed to RTK (inside FOV) for the checkerboard
+    ct_matched = _linear_rescale(ctd_a, rtk_a, fov_a) if ctd_a is not None else None
+
+    # ── Geometry / slicing ───────────────────────────────────────────────
+    z, y, x = rtk_a.shape
+    sx, sy, sz = reference.GetSpacing()
+    Lx, Ly, Lz = x * sx, y * sy, z * sz
+
+    slice_sag = x // 2
+    slice_cor = y // 2
+    slice_ax = z // 2
+
+    def _gs(vol, v):
+        if vol is None:
+            return None
+        if v == 0:
+            return vol[slice_ax, :, :]
+        elif v == 1:
+            return vol[::-1, :, slice_sag]
+        else:
+            return vol[::-1, slice_cor, :]
+
+    asp = {0: sy / sx, 1: sz / sy, 2: sz / sx}
+
+    props = dict(facecolor="white", alpha=0.9, edgecolor="white", boxstyle="round,pad=0.5")
+
+    def _blank(ax):
+        ax.text(0.5, 0.5, "N/A", transform=ax.transAxes, ha="center", va="center",
+                fontsize=12, color="gray")
+
+    # ── Panel draw functions (label, fn) ─────────────────────────────────
+    def _gray(a, v):
+        return _gs(a, v)
+
+    def _draw_clin(ax, v):
+        sl = _gray(clin_a, v)
+        if sl is None:
+            _blank(ax); return
+        ax.imshow(sl, cmap="gray", vmin=bg_clin, vmax=hi_clin, aspect=asp[v])
+
+    def _draw_rtk(ax, v):
+        ax.imshow(_gray(rtk_a, v), cmap="gray", vmin=bg_rtk, vmax=hi_rtk, aspect=asp[v])
+        fov_sl = _gs(fov_a.astype(float), v)
+        if fov_sl is not None and fov_sl.any():
+            ax.contour(fov_sl, levels=[0.5], colors="red", linewidths=1.0)
+
+    def _draw_sim(ax, v):
+        sl = _gray(sim_a, v)
+        if sl is None:
+            _blank(ax); return
+        ax.imshow(sl, cmap="gray", vmin=bg_sim, vmax=hi_sim, aspect=asp[v])
+
+    def _draw_ctd(ax, v):
+        sl = _gray(ctd_a, v)
+        if sl is None:
+            _blank(ax); return
+        ax.imshow(sl, cmap="gray", vmin=bg_ctd, vmax=hi_ctd, aspect=asp[v])
+
+    def _draw_check(ax, v):
+        if ct_matched is None:
+            _blank(ax); return
+        cb = _make_checkerboard(_gs(rtk_a, v), _gs(ct_matched, v), tile=checkerboard_tile)
+        ax.imshow(cb, cmap="gray", vmin=bg_rtk, vmax=hi_rtk, aspect=asp[v])
+
+    panels = [
+        ("CBCT clinical", _draw_clin),
+        ("CBCT rtk (FOV outline)", _draw_rtk),
+        ("CBCT simulated", _draw_sim),
+        ("CT def masked", _draw_ctd),
+        ("Checkerboard rtk/CT", _draw_check),
+    ]
+
+    n_cols = len(panels)
+    row_labels = ["Axial", "Sagittal", "Coronal"]
+    # Physical height/width of each orientation panel (column width is uniform):
+    #   axial    : Lx wide × Ly tall
+    #   sagittal : Ly wide × Lz tall
+    #   coronal  : Lx wide × Lz tall
+    row_aspect = [Ly / Lx, Lz / Ly, Lz / Lx]
+    height_ratios = row_aspect
+
+    # ── Projection panel selection ───────────────────────────────────────
+    angles_arr = np.array(gantry_angles) % 360.0
+    selected = []
+    for target in target_angles:
+        t = target % 360.0
+        diff = np.abs(angles_arr - t)
+        diff = np.minimum(diff, 360.0 - diff)
+        selected.append((target, int(np.argmin(diff))))
+
+    # ── Auto-size the figure from the panel aspect ratios ────────────────
+    col_w = 4.0  # inches per column
+    top_h = col_w * float(np.sum(row_aspect))            # 3 stacked orientation rows
+    proj_aspect = proj_real.shape[1] / proj_real.shape[2]  # H / W of a projection
+    bot_h = 2 * col_w * proj_aspect                      # 2 rows: real / simulated
+    fig_w = max(n_cols, len(selected)) * col_w
+    fig_h = top_h + bot_h
+
+    # ── Figure: top volume grid + bottom projection grid ─────────────────
+    fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=True)
+    sf_top, sf_bot = fig.subfigures(2, 1, height_ratios=[top_h, bot_h])
+
+    axes_top = sf_top.subplots(3, n_cols, gridspec_kw={"height_ratios": height_ratios})
+    for col, (label, draw_fn) in enumerate(panels):
+        for v in range(3):
+            a = axes_top[v, col]
+            a.set_xticks([]); a.set_yticks([])
+            draw_fn(a, v)
+            a.text(0.05, 0.95, label, transform=a.transAxes, fontsize=10,
+                   verticalalignment="top", bbox=props)
+            a.text(0.95, 0.95, patient_ID, transform=a.transAxes, fontsize=10,
+                   verticalalignment="top", horizontalalignment="right", bbox=props)
+            if col == 0:
+                a.set_ylabel(row_labels[v], fontsize=12, fontweight="bold")
+
+    # Bottom: rows = real / simulated, cols = angles
+    axes_bot = sf_bot.subplots(2, len(selected), squeeze=False)
+    for col, (angle, idx) in enumerate(selected):
+        for row, (proj, label) in enumerate([(proj_real, "Real"), (proj_sim, "Simulated")]):
+            a = axes_bot[row, col]
+            sl = proj[idx]
+            vmin, vmax = np.percentile(sl, 0.5), np.percentile(sl, 99.5)
+            a.imshow(sl, cmap="gray", vmin=vmin, vmax=vmax)
+            a.set_xticks([]); a.set_yticks([])
+            a.text(0.05, 0.95, label, transform=a.transAxes, fontsize=9,
+                   verticalalignment="top", bbox=props)
+            a.text(0.95, 0.95, patient_ID, transform=a.transAxes, fontsize=9,
+                   verticalalignment="top", horizontalalignment="right", bbox=props)
+            if row == 0:
+                a.set_title(f"{angle}°", fontsize=12, fontweight="bold")
+            if col == 0:
+                a.set_ylabel(label, fontsize=12, fontweight="bold")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)

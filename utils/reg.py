@@ -3,6 +3,7 @@ import tempfile
 import shutil
 import logging
 import requests
+from pathlib import Path
 
 import numpy as np
 
@@ -181,6 +182,22 @@ def shift_origin(
     image.SetOrigin(new_origin)
     return image
 
+def registration_residual(
+    transform: sitk.Transform,
+    fixed: sitk.Image,
+    moving: sitk.Image,
+) -> np.ndarray:
+    """
+    Translation left after removing the geometric-center difference between the
+    fixed and moving grids. The registration is initialized by aligning grid
+    centers, so this residual is the physical misalignment of the image contents.
+    """
+    center_fixed = np.array(fixed.TransformContinuousIndexToPhysicalPoint(
+        [(s - 1) / 2.0 for s in fixed.GetSize()]))
+    center_moving = np.array(moving.TransformContinuousIndexToPhysicalPoint(
+        [(s - 1) / 2.0 for s in moving.GetSize()]))
+    return np.asarray(transform.GetOffset()) - (center_moving - center_fixed)
+
 def run_deformable(
     fixed: sitk.Image | None = None,
     moving: sitk.Image | None = None,
@@ -291,7 +308,69 @@ def run_deformable(
 
     return deformed_sitk, disp_field_sitk
 
-def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None, default_value = 0,log=False)->Union[sitk.Image,sitk.Transform]:
+
+def write_elastix_euler_transform(
+    transform: sitk.Transform,
+    reference_image: sitk.Image,
+    output_path: str,
+    default_value: float = -1000,
+    result_format: str = "nrrd",
+    final_bspline_order: int = 1,
+    compute_zyx: bool = False,
+):
+    """
+    Write a SimpleITK Euler3DTransform into an elastix-style
+    TransformParameters.0.txt file.
+
+    reference_image should usually be the fixed image of the elastix call
+    where this transform will be used as -t0.
+    """
+
+    euler = sitk.Euler3DTransform(transform)
+
+    rx, ry, rz, tx, ty, tz = euler.GetParameters()
+    cx, cy, cz = euler.GetCenter()
+
+    size = reference_image.GetSize()
+    spacing = reference_image.GetSpacing()
+    origin = reference_image.GetOrigin()
+    direction = reference_image.GetDirection()
+
+    compute_zyx_str = "true" if compute_zyx else "false"
+
+    text = f"""(CenterOfRotationPoint {cx:.16g} {cy:.16g} {cz:.16g})
+    (ComputeZYX "{compute_zyx_str}")
+    (Direction {" ".join(f"{v:.16g}" for v in direction)})
+    (FixedImageDimension 3)
+    (FixedInternalImagePixelType "float")
+    (HowToCombineTransforms "Compose")
+    (Index 0 0 0)
+    (InitialTransformParameterFileName "NoInitialTransform")
+    (MovingImageDimension 3)
+    (MovingInternalImagePixelType "float")
+    (NumberOfParameters 6)
+    (Origin {origin[0]:.16g} {origin[1]:.16g} {origin[2]:.16g})
+    (Size {size[0]} {size[1]} {size[2]})
+    (Spacing {spacing[0]:.16g} {spacing[1]:.16g} {spacing[2]:.16g})
+    (Transform "EulerTransform")
+    (TransformParameters {rx:.16g} {ry:.16g} {rz:.16g} {tx:.16g} {ty:.16g} {tz:.16g})
+    (UseDirectionCosines "true")
+
+    // ResampleInterpolator specific
+    (FinalBSplineInterpolationOrder {final_bspline_order})
+    (ResampleInterpolator "FinalBSplineInterpolator")
+
+    // Resampler specific
+    (CompressResultImage "false")
+    (DefaultPixelValue {default_value})
+    (Resampler "DefaultResampler")
+    (ResultImageFormat "{result_format}")
+    (ResultImagePixelType "float")
+    """
+
+    Path(output_path).write_text(text)
+
+def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None, default_value = 0,log=False, output_dir=None)->Union[sitk.Image,sitk.Transform]:
     """
     Perform rigid registration between a fixed image and a moving image using the given parameter file.
 
@@ -350,6 +429,9 @@ def rigid_elastix(fixed:sitk.Image, moving:sitk.Image, parameter_file, mask=None
     resample.SetInterpolator(sitk.sitkLinear)
     resample.SetDefaultPixelValue(float(default_value))
     registered_image = resample.Execute(moving)
+    if output_dir is not None:
+        write_elastix_euler_transform(inverse_transform, fixed, os.path.join(output_dir, "Elastix_TransformParameters.0.txt"), default_value)
+    #     shutil.copy(os.path.join(temp_dir, "TransformParameters.0.txt"), os.path.join(output_dir, "TransformParameters.0.txt"))
     os.chdir(current_directory)
     shutil.rmtree(temp_dir)
     if log != False:
@@ -375,6 +457,8 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
 
         sitk.WriteImage(fixed, fixed_path)
         sitk.WriteImage(moving, moving_path)
+        
+        shutil.copy(os.path.join(output_dir, "Elastix_TransformParameters.0.txt"), os.path.join(temp_dir, "RIGID_TransformParameters.0.txt"))
 
         print("Saved fixed and moving images to %s", temp_dir)
         
@@ -383,7 +467,8 @@ def deformable_impact(fixed: sitk.Image, moving: sitk.Image, output_dir: str):
             params={
                 "fixed_path": fixed_path,
                 "moving_path": moving_path,
-                "output_dir": temp_dir
+                "output_dir": temp_dir,
+                "rigid_transform_path": os.path.join(temp_dir, "RIGID_TransformParameters.0.txt")
             }
         )
         

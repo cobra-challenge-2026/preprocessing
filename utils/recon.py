@@ -88,8 +88,8 @@ def fdk(
     if size is None:
         output_size = itk.Size[3]()
         output_size[0] = math.ceil(fov_diameter_iso / output_spacing[0])
-        output_size[2] = math.ceil(fov_diameter_iso / output_spacing[1])
-        output_size[1] = math.ceil(fov_height_iso   / output_spacing[2])
+        output_size[2] = math.ceil(fov_diameter_iso / output_spacing[2])
+        output_size[1] = math.ceil(fov_height_iso   / output_spacing[1])
     else:
         output_size = size
     
@@ -256,10 +256,9 @@ def shift_integer(img, shift_val):
 
 def correct_i0_varian(
         projections: sitk.Image, 
-        projections_header: dict, 
         air_scans_dir: str, 
         geometry, 
-        scan_xml_path: str, 
+        scan_xml_path: str,
         mode: str = 'nearest', 
         scale_mode: str = 'ma',
         integer_shift: bool = False,
@@ -407,10 +406,10 @@ def correct_i0_varian(
         ma_scan, ms_scan, _  = get_scan_parameters(scan_xml_path)
         ma_air, ms_air = (air_header[0]['KVMilliAmperes'],air_header[0]['KVMilliSeconds'])
         scale_factor = (ma_scan * ms_scan) / (ma_air * ms_air)
-    elif scale_mode == 'kvnorm':
-        kvnorm_air = air_header[0]['KVNormChamber']
-        kvnorm_scan = projections_header['KVNormChamber']
-        scale_factor = kvnorm_scan / kvnorm_air
+    # elif scale_mode == 'kvnorm':
+    #     kvnorm_air = air_header[0]['KVNormChamber']
+    #     kvnorm_scan = projections_header['KVNormChamber']
+    #     scale_factor = kvnorm_scan / kvnorm_air
     elif scale_mode == 'constant':
         scale_factor = 24
     air_corr = sitk.Multiply(air_corr, scale_factor)

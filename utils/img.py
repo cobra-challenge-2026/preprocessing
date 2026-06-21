@@ -1,18 +1,15 @@
 import SimpleITK as sitk
 import numpy as np
 import logging
-from scipy import ndimage
-from totalsegmentator.python_api import totalsegmentator
 import utils.io as io
 from typing import Optional
-import configparser as cpars
 import pydicom
 from typing import Any, Tuple
 import os
-import fnmatch
 import yaml
 import xml.etree.ElementTree as ET
 import utils.seg as seg
+from scipy.ndimage import median_filter
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +31,12 @@ def fix_array_order(img: sitk.Image, order = (1, 2, 0), flip=()) -> sitk.Image:
     
     new_img = sitk.GetImageFromArray(img_np)
     
+    # order indexes numpy (z,y,x) axes; origin/spacing are (x,y,z), so axis i maps to index 2-i
     old_origin = img.GetOrigin()
-    new_origin = (old_origin[order[2]], old_origin[order[1]], old_origin[order[0]])
-    
+    new_origin = (old_origin[2 - order[2]], old_origin[2 - order[1]], old_origin[2 - order[0]])
+
     old_spacing = img.GetSpacing()
-    new_spacing = (old_spacing[order[2]], old_spacing[order[1]], old_spacing[order[0]])
+    new_spacing = (old_spacing[2 - order[2]], old_spacing[2 - order[1]], old_spacing[2 - order[0]])
     
     new_img.SetOrigin(new_origin)
     new_img.SetSpacing(new_spacing)
@@ -357,3 +355,179 @@ def ac_correction(ct: sitk.Image, cbct: sitk.Image) -> Tuple[sitk.Image, sitk.Im
     ct_filled = fill_cavities_by_dilation(ct, ct_acs)
     ct_ac = insert_air_cavity(ct_filled, cbct_acs, air_value=-824.0)
     return ct_ac, ct_acs, cbct_acs
+
+def remove_couch(
+    image: sitk.Image,
+    fov_mask: sitk.Image,
+    surface_margin_mm: float = 2.0,
+    return_details: bool = False,
+    **kwargs,
+) -> sitk.Image:
+    """
+    One-call couch removal: returns the FOV mask with the region behind the
+    patient's posterior surface removed.
+
+    Traces the back from image intensity (see generate_couch_masks_from_image)
+    and drops everything more than surface_margin_mm behind it. No acquisition
+    metadata or template is required.
+
+    image must have an axis-aligned grid with the y index increasing
+    posteriorly. If fov_mask lives on a different grid the behind-mask is
+    resampled onto it, so both images must be aligned in world coordinates.
+
+    With return_details=True returns (fov, details_dict) where details_dict
+    also contains couch_mask/behind_mask and the fitted depth.
+    """
+    details = generate_couch_masks_from_image(
+        image, fov_mask=fov_mask, surface_margin_mm=surface_margin_mm, **kwargs,
+    )
+    behind = details["behind_mask"]
+    if fov_mask.GetSize() != image.GetSize():
+        behind = sitk.Resample(behind, fov_mask, sitk.Transform(),
+                               sitk.sitkNearestNeighbor, 0, sitk.sitkUInt8)
+    fov = remove_couch_from_fov(fov_mask, behind)
+    return (fov, details) if return_details else fov
+
+
+def remove_couch_from_fov(fov_mask: sitk.Image, behind_mask: sitk.Image) -> sitk.Image:
+    """
+    Remove the region at/behind the couch surface from a CBCT FOV mask.
+    """
+    fov = sitk.Cast(fov_mask != 0, sitk.sitkUInt8)
+    behind = sitk.Cast(behind_mask != 0, sitk.sitkUInt8)
+    behind.CopyInformation(fov)
+    return sitk.And(fov, sitk.Not(behind))
+
+
+def detect_posterior_surface(
+    image: sitk.Image,
+    fov_mask: sitk.Image = None,
+    body_threshold_hu: float = -300.0,
+    min_body_cc_fraction: float = 0.02,
+    smooth_mm: float = 10.0,
+    separation_open_mm: float = 3.0,
+) -> np.ndarray:
+    """
+    Trace the patient's posterior (back) surface from image intensity alone.
+
+    Builds a body mask (in-FOV voxels above body_threshold_hu, HU) and keeps its
+    largest connected component as the patient. When the patient lies in contact
+    with the couch the body mask fuses patient + couch into one component, so a
+    morphological opening (radius separation_open_mm) is applied first to sever
+    the thin contact neck; the couch then drops out as a separate, smaller
+    component while the opening regrows the patient to ~its original boundary.
+    Set separation_open_mm to 0 to skip the opening (old behaviour, valid only
+    when an air gap already separates patient and couch). The most-posterior
+    body voxel in each (z, x) column is taken; the surface is median-smoothed
+    over (z, x) (smooth_mm window) to shrug off streaks and noise; columns with
+    no body are filled from their in-slice median.
+
+    Returns a float array of shape (nz, nx): the posterior surface row (y
+    index, posterior positive) for each column.
+    """
+    arr = sitk.GetArrayFromImage(image).astype(np.float32)  # [z, y, x]
+    nz, ny, nx = arr.shape
+    sx, sy, sz = image.GetSpacing()
+
+    if fov_mask is not None:
+        if fov_mask.GetSize() != image.GetSize():
+            fov_mask = sitk.Resample(fov_mask, image, sitk.Transform(),
+                                     sitk.sitkNearestNeighbor, 0, sitk.sitkUInt8)
+        fov = sitk.GetArrayViewFromImage(fov_mask) > 0
+        arr = np.where(fov, arr, body_threshold_hu - 1.0)
+
+    body = sitk.GetImageFromArray((arr > body_threshold_hu).astype(np.uint8))
+    body.SetSpacing((sx, sy, sz))
+    if separation_open_mm and separation_open_mm > 0:
+        # sever the thin patient<->couch contact so the largest component is the
+        # patient alone (kernel radius in voxels, per axis).
+        radius = [max(1, int(round(separation_open_mm / s))) for s in (sx, sy, sz)]
+        body = sitk.BinaryMorphologicalOpening(body, radius, sitk.sitkBall, 0.0, 1.0)
+    cc = sitk.RelabelComponent(sitk.ConnectedComponent(body), sortByObjectSize=True)
+    patient = sitk.GetArrayFromImage(cc) == 1
+    if patient.sum() < min_body_cc_fraction * patient.size:
+        raise ValueError(
+            "Largest body component is implausibly small "
+            f"({patient.sum() / max(patient.size, 1):.1%} of the volume); "
+            "check body_threshold_hu / FOV."
+        )
+
+    # most-posterior body voxel per (z, x) column; NaN where the column is empty
+    yy = np.arange(ny, dtype=np.float32)[None, :, None]
+    surf = np.where(patient, yy, -1.0).max(axis=1)  # [z, x]
+    surf[surf < 0] = np.nan
+    for z in range(nz):
+        row = surf[z]
+        empty = np.isnan(row)
+        if empty.any() and not empty.all():
+            row[empty] = np.nanmedian(row)
+    surf[np.isnan(surf)] = np.nanmedian(surf)
+
+    kz = max(1, int(round(smooth_mm / sz)) | 1)
+    kx = max(1, int(round(smooth_mm / sx)) | 1)
+    return median_filter(surf, size=(kz, kx))
+
+
+def generate_couch_masks_from_image(
+    image: sitk.Image,
+    fov_mask: sitk.Image = None,
+    body_threshold_hu: float = -300.0,
+    surface_margin_mm: float = 2.0,
+    flat_posterior: bool = True,
+    posterior_percentile: float = 90.0,
+    return_surface: bool = False,
+    **surface_kwargs,
+) -> dict:
+    """
+    Image-based couch removal for scans without couch metadata or a template:
+    removes everything behind the patient's back.
+
+    Traces the posterior surface with detect_posterior_surface. With
+    flat_posterior (default) the cut is a single horizontal plane placed
+    surface_margin_mm behind the patient's most-posterior extent -- a straight
+    line in every view -- which matches the flat couch top while keeping all of
+    the patient. With flat_posterior=False the cut follows the back per column.
+    surface_margin_mm is a posterior safety gap so the cut never clips the skin.
+
+    posterior_percentile sets how the "deepest back point" is taken for the
+    flat plane: the cut sits at that percentile of the per-column surface rather
+    than the absolute max. Lowering it makes couch removal stricter -- a few
+    columns where the back merges with the couch (no air gap) can no longer drag
+    the plane down to couch level and leave the tabletop in. 100 reproduces the
+    old max behaviour; ignored when flat_posterior is False.
+
+    Image array is [z, y, x] with the y index increasing posteriorly. Returns a
+    dict with couch_mask (solid voxels behind the cut -- a rough couch outline
+    for QA), behind_mask (sitk uint8), depth (cut depth, mm below the grid
+    centre) and, if return_surface, the (nz, nx) surface array.
+    """
+    nx, ny, nz = image.GetSize()
+    sy = image.GetSpacing()[1]
+    surf = detect_posterior_surface(
+        image, fov_mask, body_threshold_hu=body_threshold_hu, **surface_kwargs
+    )  # [z, x]
+    margin = surface_margin_mm / sy
+    rows = np.arange(ny)
+
+    if flat_posterior:
+        # single horizontal plane just behind the patient's back (= the flat
+        # couch top). Use a high percentile rather than the absolute max so a
+        # few couch-merged columns can't push the plane down to couch level.
+        cut_row = float(np.percentile(surf, posterior_percentile)) + margin
+        behind = np.broadcast_to((rows > cut_row)[None, :, None], (nz, ny, nx))
+        depth = float((cut_row - (ny - 1) / 2.0) * sy)
+    else:
+        cut = surf[:, None, :] + margin                # [z, 1, x]
+        behind = rows[None, :, None] > cut             # [z, ny, x]
+        depth = float((np.median(surf) - (ny - 1) / 2.0) * sy)
+    behind = np.ascontiguousarray(behind)
+    couch = behind & (sitk.GetArrayViewFromImage(image) > body_threshold_hu)
+
+    out = {"depth": depth}
+    if return_surface:
+        out["surface"] = surf
+    for key, arr3d in [("couch_mask", couch), ("behind_mask", behind)]:
+        mask = sitk.GetImageFromArray(np.ascontiguousarray(arr3d).astype(np.uint8))
+        mask.CopyInformation(image)
+        out[key] = mask
+    return out
