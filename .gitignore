@@ -22,3 +22,4 @@ configs/generate_mug_config.py
 configs/generate_muw_config.py
 configs/lmu_config_sets.yaml
 configs/umcu_config_sets.yaml
+.claude

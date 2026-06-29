@@ -14,42 +14,24 @@ logger = logging.getLogger(__name__)
 def format_metadata(md: dict, patient_ID: str) -> str:
     lines = []
     lines.append(f"Patient ID: {patient_ID}")
-    lines.append(f"Center: A")
-    lines.append("")
+    lines.append(f"Center: {patient_ID[0]}")
     lines.append("CT:")
     lines.append(f"  Manufacturer: {md.get('ct', {}).get('Manufacturer', 'N/A')}")
     lines.append(f"  Model: {md.get('ct', {}).get('ManufacturerModelName', 'N/A')}")
     lines.append(f"  kVp: {md.get("ct", {}).get("KVP", None)} kV")
     lines.append(f"  mA: {md.get("ct", {}).get("XRayTubeCurrent", None)} mA")
     lines.append(f"  Exposure Time: {md.get("ct", {}).get("ExposureTime", None)} ms")
-    lines.append(f"  Exposure: {md.get("ct", {}).get("Exposure", None)} mAs")
-    lines.append(f"  CTDIvol: {md.get("ct", {}).get("CTDIvol", None):.2f}")
-    lines.append(f"  DataCollectionDiameter: {md.get("ct", {}).get("DataCollectionDiameter", None)} mm")
-    lines.append(f"  Reconstruction Diameter: {md.get("ct", {}).get("ReconstructionDiameter", None)} mm")
     lines.append(f"  Slice Thickness: {md.get("ct", {}).get("SliceThickness", None)} mm")
     lines.append(f"  Pixel Spacing: {md.get("ct", {}).get("PixelSpacing", None)} mm")
-    lines.append(f"  Rows x Columns: {md.get("ct", {}).get("Rows", None)} x {md.get("ct", {}).get("Columns", None)}")
     lines.append("")
     lines.append("CBCT:")
     lines.append(f"  Manufacturer: {md.get('cbct', {}).get('Manufacturer', 'N/A')}")
-    lines.append(f"  Model: ")
     lines.append(f"  kVp: {md.get("cbct", {}).get("TubeVoltage", None)} kV")
     lines.append(f"  mA: {md.get("cbct", {}).get("TubeCurrent", None)} mA")
     lines.append(f"  Exposure Time: {md.get("cbct", {}).get("PulseLength", None)} ms")
-    lines.append(f"  Exposure: {md.get("cbct", {}).get("TubeCurrent", None)*md.get("cbct", {}).get("PulseLength", None)/1000} mAs")
     lines.append(f"  Frames: {md.get("cbct", {}).get("Frames", None)}")
     lines.append(f"  Projection Spacing: {md.get("cbct", {}).get("ImagerResX", None)} mm x {md.get("cbct", {}).get("ImagerResY", None)} mm")
     lines.append(f"  Projection Size: {md.get("cbct", {}).get("ImagerSizeX", None)} x {md.get("cbct", {}).get("ImagerSizeY", None)}")
-    lines.append(f"  Trajectory: {md.get("cbct", {}).get("Trajectory", 'N/A')}")
-    lines.append(f"  Fan: {md.get("cbct", {}).get("Fan", None)}")
-    lines.append(f"  Start Angle: {md.get("cbct", {}).get("StartAngle", None):.2f} degrees")
-    lines.append(f"  Stop Angle: {md.get("cbct", {}).get("StopAngle", None):.2f} degrees")
-    lines.append(f"  Recon. Spacing: {md.get("cbct", {}).get("ReconstructionSpacingX", None):.2f} x {md.get("cbct", {}).get("ReconstructionSpacingY", None):.2f} x {md.get("cbct", {}).get("ReconstructionSpacingZ", None):.2f} mm")
-    lines.append(f"  Recon. Size: {md.get("cbct", {}).get("ReconstructionSizeX", None)} x {md.get("cbct", {}).get("ReconstructionSizeY", None)} x {md.get("cbct", {}).get("ReconstructionSizeZ", None)}")
-    lines.append(f"  Antiscatter Grid: {md.get("cbct", {}).get("ScatterGrid", 'N/A')}")
-    lines.append(f"  Filter Type: {md.get("cbct", {}).get("KVFilter", 'N/A')}")
-    lines.append(f"  Collimator: {md.get("cbct", {}).get("Collimator", 'N/A')}")
-    lines.append(f"  FOV Type: {md.get("cbct", {}).get("FOV", 'N/A')}")
     lines.append(f"")
     return "\n".join(lines)
 
@@ -423,13 +405,67 @@ def generate_overview_deformed(
     plt.close(fig)
 
 
+def _spread_targets_over_arc(angles_arr: np.ndarray, n: int) -> list:
+    """Return ``n`` angles (deg, in [0, 360)) spread evenly across the acquired arc.
+
+    The acquired arc is located by finding the largest angular gap between
+    consecutive sorted angles; the rest of the circle is the covered span. A
+    partial arc (e.g. a Varian ~210° scan) is sampled inclusive of both
+    endpoints, while a near-full 360° scan is spaced around the whole circle.
+    This avoids collapsing several targets onto the same projection when the
+    scan does not cover hard-coded targets like 0/45/90.
+    """
+    s = np.unique(np.sort(angles_arr))
+    if len(s) <= n:
+        return list(s)
+    gaps = np.append(np.diff(s), (s[0] + 360.0) - s[-1])
+    k = int(np.argmax(gaps))
+    max_gap = float(gaps[k])
+    start = float(s[(k + 1) % len(s)])     # first angle after the largest gap
+    span = 360.0 - max_gap
+    if max_gap < 10.0:                      # effectively a full circle
+        return [(start + 360.0 * i / n) % 360.0 for i in range(n)]
+    if n == 1:
+        return [(start + span / 2.0) % 360.0]
+    return [(start + span * i / (n - 1)) % 360.0 for i in range(n)]
+
+
+def _select_projection_indices(
+    gantry_angles: list, n: int = 3, target_angles: list | None = None
+) -> list:
+    """Pick projection indices to display, labelled by their true gantry angle.
+
+    If ``target_angles`` is given, each target is matched to its nearest acquired
+    angle (legacy behaviour). Otherwise ``n`` angles are spread evenly across the
+    actually-acquired arc (see :func:`_spread_targets_over_arc`).
+
+    Returns a list of ``(true_angle_deg, index)`` where ``true_angle_deg`` is the
+    rounded gantry angle of the chosen projection, so each panel is labelled with
+    what it actually shows rather than the requested target.
+    """
+    angles_arr = np.array(gantry_angles, dtype=float) % 360.0
+    if target_angles is not None:
+        targets = [t % 360.0 for t in target_angles]
+    else:
+        targets = _spread_targets_over_arc(angles_arr, n)
+
+    selected = []
+    for t in targets:
+        diff = np.abs(angles_arr - t)
+        diff = np.minimum(diff, 360.0 - diff)
+        idx = int(np.argmin(diff))
+        selected.append((int(round(angles_arr[idx])), idx))
+    return selected
+
+
 def generate_overview_projections(
     proj_real: np.ndarray,
     proj_sim: np.ndarray,
     gantry_angles: list,
     output_path: str,
     patient_ID: str,
-    target_angles: list = [0, 45, 90],
+    target_angles: list | None = None,
+    n_proj: int = 3,
 ) -> None:
     """
     Generate an overview PNG comparing real (I0-corrected) and simulated projections
@@ -447,18 +483,14 @@ def generate_overview_projections(
         Path to save the overview PNG.
     patient_ID : str
         Patient identifier shown on each panel.
-    target_angles : list
-        Gantry angles (degrees) to display. Default: [0, 45, 90].
+    target_angles : list, optional
+        Gantry angles (degrees) to display. If ``None`` (default), ``n_proj``
+        angles are spread evenly across the actually-acquired arc instead, which
+        avoids picking duplicate projections on partial-arc (e.g. Varian) scans.
+    n_proj : int
+        Number of projection rows to show when ``target_angles`` is ``None``.
     """
-    angles_arr = np.array(gantry_angles) % 360.0
-
-    selected = []
-    for target in target_angles:
-        t = target % 360.0
-        diff = np.abs(angles_arr - t)
-        diff = np.minimum(diff, 360.0 - diff)
-        idx = int(np.argmin(diff))
-        selected.append((target, idx))
+    selected = _select_projection_indices(gantry_angles, n=n_proj, target_angles=target_angles)
 
     n_rows = len(selected)
     n_cols = 3
@@ -501,7 +533,6 @@ def generate_overview_projections(
     plt.close(fig)
 
 def generate_final_overview(
-    cbct_clinical: sitk.Image | None,
     cbct_rtk: sitk.Image,
     cbct_simulated: sitk.Image | None,
     ct_def_masked: sitk.Image | None,
@@ -511,26 +542,30 @@ def generate_final_overview(
     gantry_angles: list,
     output_path: str,
     patient_ID: str,
-    target_angles: list = [0, 45, 90],
+    metadata: dict | None = None,
+    target_angles: list | None = None,
+    n_proj: int = 3,
     checkerboard_tile: int = 32,
+    proj_spacing: tuple[float, float] | None = None,
+    proj_window_percentiles: tuple[float, float] = (5, 95.0),
+    proj_roi_frac: float = 0.4,
 ) -> None:
     """
     Generate a single final-overview PNG combining the volumetric reconstructions
     and the projection comparison.
 
-    The top block shows three orientations (axial / sagittal / coronal) of five
+    The top block shows three orientations (axial / sagittal / coronal) of four
     panels, all resampled onto the CBCT RTK grid:
-        1. CBCT clinical
-        2. CBCT rtk, with the FOV mask drawn as a red outline
-        3. CBCT simulated
-        4. CT deformed (masked)
-        5. Checkerboard of CBCT rtk vs. CT deformed (intensity matched)
+        1. CBCT rtk, with the FOV mask drawn as a red outline
+        2. CBCT simulated
+        3. CT deformed (masked)
+        4. Checkerboard of CBCT rtk vs. CT deformed (intensity matched)
 
     The bottom block shows the real and simulated projections at ``target_angles``.
 
     Parameters
     ----------
-    cbct_clinical, cbct_rtk, cbct_simulated, ct_def_masked : sitk.Image
+    cbct_rtk, cbct_simulated, ct_def_masked : sitk.Image
         Volumes to display. ``cbct_rtk`` is used as the reference grid; the others
         are resampled onto it. ``None`` panels are left blank. Pass copies if the
         caller needs to keep the originals unmodified (values < -1024 are clamped).
@@ -545,10 +580,39 @@ def generate_final_overview(
         Path to save the overview PNG.
     patient_ID : str
         Patient identifier shown on each panel.
-    target_angles : list
-        Gantry angles (degrees) to display for the projections. Default [0, 45, 90].
+    metadata : dict, optional
+        Acquisition metadata to display as a text box. If ``None`` or empty, no
+        metadata box is drawn.
+    target_angles : list, optional
+        Gantry angles (degrees) to display for the projections. If ``None``
+        (default), ``n_proj`` angles are spread evenly across the actually-
+        acquired arc instead, which avoids picking duplicate projections on
+        partial-arc (e.g. Varian) scans that don't cover hard-coded targets.
+    n_proj : int
+        Number of projection columns to show when ``target_angles`` is ``None``.
     checkerboard_tile : int
         Tile size in pixels for the checkerboard panel.
+    proj_spacing : tuple of float, optional
+        Detector pixel spacing ``(spacing_x, spacing_y)`` in mm for the projections,
+        used to display them with the correct physical aspect ratio. If ``None``,
+        square pixels are assumed.
+    proj_window_percentiles : tuple of float, optional
+        ``(low, high)`` percentiles used to set the grayscale window for the
+        projection panels. The projections are raw 16-bit detector signal (not
+        line integrals), where the bright open-beam region sits near the top of
+        the range and the patient is the darker, attenuated part. The window is
+        computed per panel (real and simulated are windowed independently, since
+        their detector-signal scales differ) over the central detector ROI (see
+        ``proj_roi_frac``). Lower ``high`` to saturate the bright open beam and
+        expand contrast in the patient. Default ``(1.0, 75.0)``.
+    proj_roi_frac : float, optional
+        Fraction (0–1) of the detector width/height, centred on the detector, used
+        to compute the projection window. The patient projects near the detector
+        centre at every gantry angle while the bright open beam is peripheral, so
+        restricting the percentiles to this central ROI keeps the window locked on
+        the patient regardless of how much open beam is in frame (which otherwise
+        crushes thin AP-style views to black). Set to ``1.0`` to use the full
+        frame. Default ``0.6``.
     """
     reference = cbct_rtk
 
@@ -559,12 +623,11 @@ def generate_final_overview(
 
     # ── Resample everything onto the RTK grid ────────────────────────────
     rtk_im = cbct_rtk
-    clin_im = _res(cbct_clinical)
     sim_im = _res(cbct_simulated)
     ctd_im = _res(ct_def_masked)
     fov_im = _res(fov_cbct, sitk.sitkNearestNeighbor, 0)
 
-    for im in (rtk_im, clin_im, sim_im, ctd_im):
+    for im in (rtk_im, sim_im, ctd_im):
         if im is not None:
             im[im < -1024] = -1024
 
@@ -572,7 +635,6 @@ def generate_final_overview(
         return sitk.GetArrayFromImage(im).astype(float) if im is not None else None
 
     rtk_a = _arr(rtk_im)
-    clin_a = _arr(clin_im)
     sim_a = _arr(sim_im)
     ctd_a = _arr(ctd_im)
     fov_a = (
@@ -581,15 +643,14 @@ def generate_final_overview(
         else np.ones_like(rtk_a, dtype=bool)
     )
 
-    def _win(a):
+    def _win(a, mask=None):
         if a is None:
             return 0.0, 1.0
-        return np.percentile(a, 0.1), np.percentile(a, 99.9)
+        vals = a[mask] if mask is not None and mask.any() else a
+        return float(np.percentile(vals, 0.1)), float(np.percentile(vals, 99.9))
 
-    bg_rtk, hi_rtk = _win(rtk_a)
-    bg_clin, hi_clin = _win(clin_a)
-    bg_sim, hi_sim = _win(sim_a)
-    bg_ctd, hi_ctd = _win(ctd_a)
+    _win_basis = rtk_a if rtk_a is not None else (sim_a if sim_a is not None else ctd_a)
+    bg, hi = _win(_win_basis, fov_a if rtk_a is not None else None)
 
     # Intensity-match CT deformed to RTK (inside FOV) for the checkerboard
     ct_matched = _linear_rescale(ctd_a, rtk_a, fov_a) if ctd_a is not None else None
@@ -613,26 +674,16 @@ def generate_final_overview(
         else:
             return vol[::-1, slice_cor, :]
 
-    asp = {0: sy / sx, 1: sz / sy, 2: sz / sx}
-
-    props = dict(facecolor="white", alpha=0.9, edgecolor="white", boxstyle="round,pad=0.5")
-
     def _blank(ax):
         ax.text(0.5, 0.5, "N/A", transform=ax.transAxes, ha="center", va="center",
-                fontsize=12, color="gray")
+                fontsize=_fs(12), color="gray")
 
     # ── Panel draw functions (label, fn) ─────────────────────────────────
     def _gray(a, v):
         return _gs(a, v)
 
-    def _draw_clin(ax, v):
-        sl = _gray(clin_a, v)
-        if sl is None:
-            _blank(ax); return
-        ax.imshow(sl, cmap="gray", vmin=bg_clin, vmax=hi_clin, aspect=asp[v])
-
     def _draw_rtk(ax, v):
-        ax.imshow(_gray(rtk_a, v), cmap="gray", vmin=bg_rtk, vmax=hi_rtk, aspect=asp[v])
+        ax.imshow(_gray(rtk_a, v), cmap="gray", vmin=bg, vmax=hi, aspect="auto")
         fov_sl = _gs(fov_a.astype(float), v)
         if fov_sl is not None and fov_sl.any():
             ax.contour(fov_sl, levels=[0.5], colors="red", linewidths=1.0)
@@ -641,29 +692,37 @@ def generate_final_overview(
         sl = _gray(sim_a, v)
         if sl is None:
             _blank(ax); return
-        ax.imshow(sl, cmap="gray", vmin=bg_sim, vmax=hi_sim, aspect=asp[v])
+        ax.imshow(sl, cmap="gray", vmin=bg, vmax=hi, aspect="auto")
 
     def _draw_ctd(ax, v):
         sl = _gray(ctd_a, v)
         if sl is None:
             _blank(ax); return
-        ax.imshow(sl, cmap="gray", vmin=bg_ctd, vmax=hi_ctd, aspect=asp[v])
+        ax.imshow(sl, cmap="gray", vmin=bg, vmax=hi, aspect="auto")
 
     def _draw_check(ax, v):
         if ct_matched is None:
             _blank(ax); return
         cb = _make_checkerboard(_gs(rtk_a, v), _gs(ct_matched, v), tile=checkerboard_tile)
-        ax.imshow(cb, cmap="gray", vmin=bg_rtk, vmax=hi_rtk, aspect=asp[v])
+        ax.imshow(cb, cmap="gray", vmin=bg, vmax=hi, aspect="auto")
 
     panels = [
-        ("CBCT clinical", _draw_clin),
-        ("CBCT rtk (FOV outline)", _draw_rtk),
+        ("CBCT RTK + FOV outline", _draw_rtk),
         ("CBCT simulated", _draw_sim),
-        ("CT def masked", _draw_ctd),
-        ("Checkerboard rtk/CT", _draw_check),
+        ("CT deformed", _draw_ctd),
+        ("CBCT RTK vs. CT deformed", _draw_check),
     ]
 
+    # ── Projection panel selection ───────────────────────────────────────
+    # Indices are chosen (and labelled) from the actually-acquired arc unless
+    # explicit target_angles are passed, so partial-arc scans don't collapse
+    # multiple panels onto the same projection.
+    selected = _select_projection_indices(gantry_angles, n=n_proj, target_angles=target_angles)
+
     n_cols = len(panels)
+    has_metadata = metadata not in (None, {})
+    n_top_cols = n_cols
+    n_bot_cols = len(selected) + (1 if has_metadata else 0)
     row_labels = ["Axial", "Sagittal", "Coronal"]
     # Physical height/width of each orientation panel (column width is uniform):
     #   axial    : Lx wide × Ly tall
@@ -672,58 +731,129 @@ def generate_final_overview(
     row_aspect = [Ly / Lx, Lz / Ly, Lz / Lx]
     height_ratios = row_aspect
 
-    # ── Projection panel selection ───────────────────────────────────────
-    angles_arr = np.array(gantry_angles) % 360.0
-    selected = []
-    for target in target_angles:
-        t = target % 360.0
-        diff = np.abs(angles_arr - t)
-        diff = np.minimum(diff, 360.0 - diff)
-        selected.append((target, int(np.argmin(diff))))
+    col_w = 4.0  # inches per image column
+    meta_w = 1.2  # metadata column width relative to an image column
+    top_width_ratios = [1.0] * n_cols
+    bot_width_ratios = [1.0] * len(selected) + ([meta_w] if has_metadata else [])
+    top_width_units = float(np.sum(top_width_ratios))
+    bot_width_units = float(np.sum(bot_width_ratios))
 
-    # ── Auto-size the figure from the panel aspect ratios ────────────────
-    col_w = 4.0  # inches per column
-    top_h = col_w * float(np.sum(row_aspect))            # 3 stacked orientation rows
-    proj_aspect = proj_real.shape[1] / proj_real.shape[2]  # H / W of a projection
-    bot_h = 2 * col_w * proj_aspect                      # 2 rows: real / simulated
-    fig_w = max(n_cols, len(selected)) * col_w
+    fig_w = max(top_width_units, bot_width_units) * col_w
+    img_col_w = fig_w / top_width_units                  # actual reconstruction-column width
+    top_h = img_col_w * float(np.sum(row_aspect))        # 3 stacked orientation rows
+
+    # Pixel aspect (height of one pixel / width of one pixel) from detector spacing
+    proj_pix_asp = (proj_spacing[1] / proj_spacing[0]) if proj_spacing else 1.0
+    # Physical H / W of a projection = (rows/cols) scaled by the pixel aspect
+    proj_aspect = proj_real.shape[1] / proj_real.shape[2] * proj_pix_asp
+    proj_col_w = fig_w / bot_width_units                 # actual projection-column width
+    bot_h = 2 * proj_col_w * proj_aspect                 # 2 rows: real / simulated
     fig_h = top_h + bot_h
 
-    # ── Figure: top volume grid + bottom projection grid ─────────────────
-    fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=True)
-    sf_top, sf_bot = fig.subfigures(2, 1, height_ratios=[top_h, bot_h])
+    # Font sizes are in absolute points, but the canvas size varies with the
+    # image/projection aspect ratios, so a fixed point size occupies a different
+    # fraction of the figure each time. Scale all fonts by the canvas's geometric
+    # mean dimension (relative to a reference) to keep text a constant relative
+    # size. Reference 18.0 ≈ a typical near-cubic-volume / square-projection run.
+    fig_scale = float(np.sqrt(fig_w * fig_h) / 18.0)
 
-    axes_top = sf_top.subplots(3, n_cols, gridspec_kw={"height_ratios": height_ratios})
+    def _fs(base):
+        return base * fig_scale
+
+    fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=False, facecolor="black")
+    outer = fig.add_gridspec(
+        2, 1,
+        height_ratios=[top_h, bot_h],
+        hspace=0.12,
+    )
+    top_grid = outer[0].subgridspec(
+        3, n_top_cols,
+        height_ratios=height_ratios,
+        width_ratios=top_width_ratios,
+        wspace=0.02,
+        hspace=0.04,
+    )
+    bot_grid = outer[1].subgridspec(
+        2, n_bot_cols,
+        width_ratios=bot_width_ratios,
+        wspace=0.02,
+        hspace=0.04,
+    )
+
+    axes_top = np.empty((3, n_top_cols), dtype=object)
+    for row in range(3):
+        for col in range(n_top_cols):
+            axes_top[row, col] = fig.add_subplot(top_grid[row, col])
+
     for col, (label, draw_fn) in enumerate(panels):
         for v in range(3):
             a = axes_top[v, col]
             a.set_xticks([]); a.set_yticks([])
             draw_fn(a, v)
-            a.text(0.05, 0.95, label, transform=a.transAxes, fontsize=10,
-                   verticalalignment="top", bbox=props)
-            a.text(0.95, 0.95, patient_ID, transform=a.transAxes, fontsize=10,
-                   verticalalignment="top", horizontalalignment="right", bbox=props)
+            if v == 0:
+                a.set_title(label, fontsize=_fs(14), fontweight="bold", color="white")
             if col == 0:
-                a.set_ylabel(row_labels[v], fontsize=12, fontweight="bold")
+                a.set_ylabel(row_labels[v], fontsize=_fs(14), fontweight="bold", color="white")
 
     # Bottom: rows = real / simulated, cols = angles
-    axes_bot = sf_bot.subplots(2, len(selected), squeeze=False)
+    axes_bot = np.empty((2, len(selected)), dtype=object)
+    for row in range(2):
+        for col in range(len(selected)):
+            axes_bot[row, col] = fig.add_subplot(bot_grid[row, col])
+
+    lo_pct, hi_pct = proj_window_percentiles
+
+    def _proj_window(sl):
+        if 0 < proj_roi_frac < 1:
+            h, w = sl.shape
+            rh, rw = int(round(h * proj_roi_frac)), int(round(w * proj_roi_frac))
+            r0, c0 = (h - rh) // 2, (w - rw) // 2
+            region = sl[r0:r0 + rh, c0:c0 + rw]
+        else:
+            region = sl
+        return np.percentile(region, lo_pct), np.percentile(region, hi_pct)
+
     for col, (angle, idx) in enumerate(selected):
         for row, (proj, label) in enumerate([(proj_real, "Real"), (proj_sim, "Simulated")]):
             a = axes_bot[row, col]
             sl = proj[idx]
-            vmin, vmax = np.percentile(sl, 0.5), np.percentile(sl, 99.5)
-            a.imshow(sl, cmap="gray", vmin=vmin, vmax=vmax)
+            vmin, vmax = _proj_window(sl)
+            a.imshow(sl, cmap="gray", vmin=vmin, vmax=vmax, aspect="auto")
             a.set_xticks([]); a.set_yticks([])
-            a.text(0.05, 0.95, label, transform=a.transAxes, fontsize=9,
-                   verticalalignment="top", bbox=props)
-            a.text(0.95, 0.95, patient_ID, transform=a.transAxes, fontsize=9,
-                   verticalalignment="top", horizontalalignment="right", bbox=props)
             if row == 0:
-                a.set_title(f"{angle}°", fontsize=12, fontweight="bold")
+                a.set_title(f"{angle}°", fontsize=_fs(14), fontweight="bold", color="white")
             if col == 0:
-                a.set_ylabel(label, fontsize=12, fontweight="bold")
+                a.set_ylabel(label, fontsize=_fs(14), fontweight="bold", color="white")
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=200)
+    # ── Metadata text box in the projection block's right-hand column ─────
+    if has_metadata:
+        meta_ax = fig.add_subplot(bot_grid[:, len(selected)])
+        meta_ax.axis("off")
+        meta_ax.text(
+            0.06, 0.5, format_metadata(metadata, patient_ID),
+            transform=meta_ax.transAxes, fontsize=_fs(11), color="white",
+            va="center", ha="left", family="monospace",
+            bbox=dict(facecolor="black", alpha=0.6, edgecolor="white",
+                      boxstyle="round,pad=0.6"),
+        )
+
+    fig.suptitle(f'Patient ID: {patient_ID}', color="white", fontsize=_fs(21), fontweight="bold", y=0.998)
+    fig.subplots_adjust(left=0.055, right=0.995, top=0.95, bottom=0.015)
+
+    # ── Vertical section headings down the left margin ────────────────────
+    # Rotated and placed left of the per-orientation / per-row labels, vertically
+    # centred on each block's bbox so they span its rows (3 for the
+    # reconstructions, 2 for the projections) and track the layout at any aspect
+    # ratio. The inter-block gap (outer hspace) keeps the projections visually
+    # separated from the reconstructions.
+    for cell, text in ((outer[0], "Reconstructed Images"), (outer[1], "Projections")):
+        pos = cell.get_position(fig)
+        fig.text(0.012, 0.5 * (pos.y0 + pos.y1), text, color="white",
+                 fontsize=_fs(16), fontweight="bold", ha="center", va="center",
+                 rotation=90)
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(output_path, dpi=200, facecolor="black")
     plt.close(fig)

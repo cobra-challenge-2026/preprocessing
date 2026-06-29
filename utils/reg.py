@@ -498,13 +498,45 @@ def apply_transforms(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.
     default_value (float, optional): The default pixel value for areas outside the original FOV after transformation. Defaults to -1024.
     interpolator (sitk.Interpolator): The interpolator to be used for resampling. Defaults to sitk.sitkLinear.
     """
-    ct_rigid = sitk.Resample(ct, ct, rigid_transform, interpolator, default_value)    
+    ct_rigid = sitk.Resample(ct, ct, rigid_transform, interpolator, default_value)
     dvf = sitk.Resample(dvf, ct)
     dvf = sitk.Cast(dvf, sitk.sitkVectorFloat64)
     transform_def = sitk.DisplacementFieldTransform(dvf)
     ct_deformed = sitk.Resample(ct_rigid, ct_rigid, transform_def, interpolator, default_value)
-    
+
     return ct_deformed
+
+def apply_transforms_single(ct: sitk.Image, rigid_transform: sitk.Transform, dvf: sitk.Image, reference: Optional[sitk.Image] = None, default_value = -1024, interpolator = sitk.sitkLinear)->sitk.Image:
+    """
+    Apply the rigid transform and the deformable DVF to the original CT in a
+    SINGLE resampling step by composing them into one transform.
+
+    This is equivalent to apply_transforms (rigid first, then deformable) but it
+    samples the original, full-FOV ``ct`` exactly once instead of resampling onto
+    an intermediate grid. Consequences:
+      - Less blur: only one interpolation of the CT instead of two/three.
+      - Fewer -1024 holes: because the deformation pulls intensities directly
+        from the original full-FOV CT, it no longer pulls in default values from
+        around a pre-cropped intermediate image.
+
+    Parameters:
+    ct (sitk.Image): The original (full-FOV) CT image to be transformed.
+    rigid_transform (sitk.Transform): The rigid transform (CBCT -> CT).
+    dvf (sitk.Image): The deformation vector field (on the CBCT/fixed grid).
+    reference (sitk.Image, optional): Grid to resample onto. Defaults to ``ct``.
+    default_value (float, optional): Value for points mapping outside the CT. Defaults to -1024.
+    interpolator (sitk.Interpolator): Interpolator for resampling. Defaults to sitk.sitkLinear.
+    """
+    reference = ct if reference is None else reference
+    dvf = sitk.Resample(dvf, reference)
+    dvf = sitk.Cast(dvf, sitk.sitkVectorFloat64)
+    transform_def = sitk.DisplacementFieldTransform(dvf)
+    # CompositeTransform applies the LAST-added transform first, so this maps an
+    # output point through the DVF first and then the rigid transform, matching
+    # the rigid-then-deformable order of apply_transforms:
+    #   output point -> (DVF) -> rigid -> original CT space
+    composite = sitk.CompositeTransform([rigid_transform, transform_def])
+    return sitk.Resample(ct, reference, composite, interpolator, default_value)
 
 def warp_structure(structure:Optional[sitk.Image], disp_field:sitk.Image, interpolator = sitk.sitkNearestNeighbor)->sitk.Image:
     """

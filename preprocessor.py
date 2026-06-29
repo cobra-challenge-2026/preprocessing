@@ -17,6 +17,7 @@ import utils.img as img
 import utils.vis as vis
 import utils.reg as reg
 import utils.seg as seg
+import utils.contrast as contrast
 
 if TYPE_CHECKING:
     from utils.config import PatientConfig
@@ -546,13 +547,23 @@ class PreProcessor:
                             output_dir=self.config.data.output
                         )
             
-        self.ct_def_small, _, self.dvf = reg.deformable_impact(
+        _, _, self.dvf = reg.deformable_impact(
                         fixed = self.cbct_rtk,
                         moving = self.ct_rigid,
                         output_dir = self.config.data.output
                     )
-        self.ct_rigid_full = sitk.Resample(self.ct, self.ct, self.rigid_transform, sitk.sitkLinear, -1024)  
-        
+        # Deform the original full-FOV CT onto the CBCT grid in a single composed
+        # resample. Sampling the original CT (instead of the pre-cropped ct_rigid)
+        # avoids -1024 pull-in holes inside the CBCT FOV and removes one interpolation.
+        self.ct_def_small = reg.apply_transforms_single(
+                        ct = self.ct,
+                        rigid_transform = self.rigid_transform,
+                        dvf = self.dvf,
+                        reference = self.cbct_rtk,
+                        default_value = -1024,
+                        interpolator = sitk.sitkLinear,
+                    )
+
         if self.config.general.vendor.lower() == 'varian':
             self.fov_cbct = self.fov_cbct
             self.cbct_clinical_rigid, self.cbct_clinical_rigid_transform = reg.rigid_elastix(
@@ -594,39 +605,64 @@ class PreProcessor:
             )
         else:
             vct_gen = vc.VirtualCTCreator(correct_cbct_before_virtual_ct=True, sct_model_path='/code/configs/checkpoint', sct_max_copy_hu=100, air_threshold_hu=-400, blend_margin_mm=2)
+            if self.config.general.center == "B":
+                avoid_bone_flag = False
+            else:
+                avoid_bone_flag = True
             self.ct_def_masked, cbct_for_blending = vct_gen.create(
                 deformed_ct = self.ct_def_small,
                 cbct = self.cbct_clinical_rigid,
                 cbct_fov = self.fov_cbct,
                 use_cbct_body = True,
-                avoid_bone_region = True,
+                avoid_bone_region = avoid_bone_flag,
                 cbct_clinical_rigid = self.cbct_clinical_rigid
             )
-        
+            if self.config.general.center == "B":
+                if os.path.isfile(os.path.join(self.config.data.output, f'contrast_mask.nii.gz')):
+                    mask_contrast = sitk.ReadImage(os.path.join(self.config.data.output, f'contrast_mask.nii.gz'))
+                    mask_contrast = reg.apply_transforms_single(
+                        ct = mask_contrast,
+                        rigid_transform = self.rigid_transform,
+                        dvf = self.dvf,
+                        reference = self.cbct_rtk,
+                        default_value = 0,
+                        interpolator = sitk.sitkNearestNeighbor,
+                    )
+                    self.ct_def_masked = contrast.correct_ct_contrast_media(self.ct_def_masked, mask_contrast, False)
+                    self.ct_def_masked = sitk.Cast(self.ct_def_masked, sitk.sitkInt16)
+                else:
+                    self.ct_def_masked = contrast.correct_ct_contrast_media(self.ct_def_masked)
+                    self.ct_def_masked = sitk.Cast(self.ct_def_masked, sitk.sitkInt16)
+            
         sitk.WriteImage(cbct_for_blending, os.path.join(self.config.data.output, f'cbct_for_blending.mha'))
+
         self.dvf = reg.extend_vector_field_outside_mask(
             self.dvf,
             self.fov_cbct,
             reference_image=self.ct,
         )
-        dvf_for_transform = sitk.Image(self.dvf)   # deep copy
-        dfield_tx = sitk.DisplacementFieldTransform(dvf_for_transform)
-        fov_cbct_full = sitk.Resample(self.fov_cbct, self.ct_rigid_full, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
-        fov_cbct_deformed = sitk.Resample(fov_cbct_full, fov_cbct_full, dfield_tx, sitk.sitkNearestNeighbor, 0)
-        fov_intersection_full = sitk.And(fov_cbct_full, fov_cbct_deformed)
-        fov_intersection_full = sitk.Cast(fov_intersection_full, sitk.sitkInt16)
-        fov_intersection_full = sitk.BinaryErode(fov_intersection_full, (1,1,1))
-        sitk.WriteImage(fov_intersection_full, os.path.join(self.config.data.output, f'fov_intersection_full.mha'))
-        ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct_rigid_full, sitk.Transform(), sitk.sitkLinear, -1024)
-        ct_def_extended = reg.apply_transforms(
+
+        self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
+
+        ct_def_extended = reg.apply_transforms_single(
             ct=self.ct,
             rigid_transform=self.rigid_transform,
             dvf=self.dvf,
+            reference=self.ct,
             default_value=-1024,
             interpolator=sitk.sitkLinear,
         )
-        self.ct_def_masked = sitk.Mask(self.ct_def_masked, self.fov_cbct, outsideValue=-1024)
-        self.ct_def = fov_intersection_full * ct_def_masked_full + (1 - fov_intersection_full) * ct_def_extended
+
+        spacing = self.fov_cbct.GetSpacing()
+        stitch_margin_mm = 3.0
+        erode_radius = [max(1, int(round(stitch_margin_mm / s))) for s in spacing]
+        fov_cbct_stitch = sitk.BinaryErode(sitk.Cast(self.fov_cbct, sitk.sitkUInt8), erode_radius)
+
+        fov_cbct_full = sitk.Resample(fov_cbct_stitch, self.ct, sitk.Transform(), sitk.sitkNearestNeighbor, 0)
+        fov_cbct_full = sitk.Cast(fov_cbct_full, sitk.sitkInt16)
+        sitk.WriteImage(fov_cbct_full, os.path.join(self.config.data.output, f'fov_cbct_full.mha'))
+        ct_def_masked_full = sitk.Resample(self.ct_def_masked, self.ct, sitk.Transform(), sitk.sitkLinear, -1024)
+        self.ct_def = fov_cbct_full * ct_def_masked_full + (1 - fov_cbct_full) * ct_def_extended
         self.ct_def = sitk.Clamp(self.ct_def, lowerBound=-1024, upperBound=3071)
         self.ct_def_masked = sitk.Clamp(self.ct_def_masked, lowerBound=-1024, upperBound=3071)
         self.cbct_clinical = sitk.Clamp(self.cbct_clinical, lowerBound=-1024, upperBound=3071)
@@ -906,11 +942,6 @@ class PreProcessor:
 
         # reference grid for the volumetric panels
         cbct_rtk = io.read_image(self.cbct_rtk_path())
-        cbct_clinical = (
-            io.read_image(self.cbct_clinical_rigid_path())
-            if os.path.isfile(self.cbct_clinical_rigid_path())
-            else io.read_image(self.cbct_clinical_path())
-        )
         ct_def_masked = io.read_image(self.ct_def_masked_path())
         fov_cbct = io.read_image(self.fov_cbct_nocouch_path())
 
@@ -920,19 +951,32 @@ class PreProcessor:
         # projections (same I0/log handling as the stage 3 projection overview)
         geometry = io.read_geometry(self.cbct_geometry_path())
         gantry_angles = [a * 180.0 / np.pi for a in geometry.GetGantryAngles()]
-        proj_real = sitk.GetArrayFromImage(io.read_image(self.cbct_projections_path())).astype(np.float32)
+        proj_img = io.read_image(self.cbct_projections_path())
+        proj_real = sitk.GetArrayFromImage(proj_img).astype(np.float32)
         proj_sim = sitk.GetArrayFromImage(io.read_image(self.projections_simulated_path())).astype(np.float32)
+        # detector pixel spacing (spacing_x, spacing_y) for correct projection aspect
+        proj_spacing = proj_img.GetSpacing()[:2]
 
-        if self.config.general.vendor.lower() == 'varian':
-            rotation = 'CW' if gantry_angles[20] < gantry_angles[30] else 'CC'
-            air_imgs, _ = recon.read_air_scans(self.config.data.airscans, rotation=rotation, return_sitk=False)
-            air = air_imgs[0].astype(np.float32)
-            eps = 1e-6
-            proj_real = -np.log(np.clip(proj_real / np.clip(air, eps, None), eps, None))
-            proj_sim = -np.log(np.clip(proj_sim, eps, None))
+        proj_real = -np.log(np.clip(proj_real, 1e-6, None))
+        proj_sim = -np.log(np.clip(proj_sim, 1e-6, None))
+        
+        # if self.config.general.vendor.lower() == 'varian':
+        #     rotation = 'CW' if gantry_angles[20] < gantry_angles[30] else 'CC'
+        #     air_imgs, _ = recon.read_air_scans(self.config.data.airscans, rotation=rotation, return_sitk=False)
+        #     air = air_imgs[0].astype(np.float32)
+        #     eps = 1e-6
+        #     proj_real = -np.log(np.clip(proj_real / np.clip(air, eps, None), eps, None))
+        #     proj_sim = -np.log(np.clip(proj_sim, eps, None))
+        
+        # elif self.config.general.vendor.lower() == 'elekta':
+        #     proj_real = -np.log(np.clip(proj_real, 1e-6, None))
+        #     proj_sim = -np.log(np.clip(proj_sim, 1e-6, None))
+
+        metadata = self.metadata
+        if not metadata and os.path.isfile(self.metadata_path()):
+            metadata = yaml.safe_load(open(self.metadata_path(), 'r'))
 
         vis.generate_final_overview(
-            cbct_clinical=cbct_clinical,
             cbct_rtk=cbct_rtk,
             cbct_simulated=cbct_simulated,
             ct_def_masked=ct_def_masked,
@@ -942,75 +986,77 @@ class PreProcessor:
             gantry_angles=gantry_angles,
             output_path=self.overview_path_final(),
             patient_ID=self.id,
+            metadata=metadata,
+            proj_spacing=proj_spacing,
         )
         self.logger.info("Final overview visualization generated.")
 
     def run_stage4(self):
         self.logger.info("Starting stage 4 postprocessing...")
         
-        ### Remove couch ###
-        cbct_rtk = io.read_image(self.cbct_rtk_path()) if os.path.isfile(self.cbct_rtk_path()) else None
-        fov = io.read_image(self.fov_cbct_path()) if os.path.isfile(self.fov_cbct_path()) else None
-        if cbct_rtk is None or fov is None:
-            self.logger.warning("CBCT or FOV mask not found. Skipping stage 4 postprocessing...")
-            return
-        self.logger.info("Detecting couch on image...")
-        result = img.generate_couch_masks_from_image(cbct_rtk, fov)
-        fov_nocouch = img.remove_couch_from_fov(fov, result["behind_mask"])
-        self.logger.info("Removed couch from FOV.")
-        io.save_image(fov_nocouch, self.fov_cbct_nocouch_path(), dtype='uint16')
+        # ### Remove couch ###
+        # cbct_rtk = io.read_image(self.cbct_rtk_path()) if os.path.isfile(self.cbct_rtk_path()) else None
+        # fov = io.read_image(self.fov_cbct_path()) if os.path.isfile(self.fov_cbct_path()) else None
+        # if cbct_rtk is None or fov is None:
+        #     self.logger.warning("CBCT or FOV mask not found. Skipping stage 4 postprocessing...")
+        #     return
+        # self.logger.info("Detecting couch on image...")
+        # result = img.generate_couch_masks_from_image(cbct_rtk, fov)
+        # fov_nocouch = img.remove_couch_from_fov(fov, result["behind_mask"])
+        # self.logger.info("Removed couch from FOV.")
+        # io.save_image(fov_nocouch, self.fov_cbct_nocouch_path(), dtype='uint16')
         
-        ### Load images for re-origining ###
-        specs = [
-            (self.ct_def_masked_path(), 'int16'),
-            (self.ct_def_path(), 'int16'),
-            (self.cbct_rtk_path(), 'int16'),
-            (self.cbct_simulated_path(), 'int16'),
-            (self.cbct_clinical_rigid_path(), 'int16'),
-            (self.fov_cbct_path(), 'uint16'),
-            (self.fov_cbct_nocouch_path(), 'uint16')
-        ]
-        images = {}
-        for path, _ in specs:
-            if path == self.cbct_rtk_path():
-                images[path] = cbct_rtk
-            elif path == self.fov_cbct_nocouch_path():
-                images[path] = fov_nocouch
-            elif os.path.isfile(path):
-                images[path] = io.read_image(path)
+        # ### Load images for re-origining ###
+        # specs = [
+        #     (self.ct_def_masked_path(), 'int16'),
+        #     (self.ct_def_path(), 'int16'),
+        #     (self.cbct_rtk_path(), 'int16'),
+        #     (self.cbct_simulated_path(), 'int16'),
+        #     (self.cbct_clinical_rigid_path(), 'int16'),
+        #     (self.fov_cbct_path(), 'uint16'),
+        #     (self.fov_cbct_nocouch_path(), 'uint16')
+        # ]
+        # images = {}
+        # for path, _ in specs:
+        #     if path == self.cbct_rtk_path():
+        #         images[path] = cbct_rtk
+        #     elif path == self.fov_cbct_nocouch_path():
+        #         images[path] = fov_nocouch
+        #     elif os.path.isfile(path):
+        #         images[path] = io.read_image(path)
 
-        # the simulated recon is reconstructed on the same CBCT geometry as the
-        # RTK recon, so it is voxel-congruent with cbct_rtk but may still carry a
-        # stale origin from the clinical frame (e.g. when the stage-3 rigid stamp
-        # was skipped). Re-stamp it onto the RTK grid so it shares cbct_rtk's
-        # origin before the common isocenter shift below.
-        sim_path = self.cbct_simulated_path()
-        if sim_path in images:
-            if images[sim_path].GetSize() == cbct_rtk.GetSize():
-                images[sim_path].CopyInformation(cbct_rtk)
-            else:
-                self.logger.warning("Simulated CBCT grid does not match the RTK grid; "
-                                    "leaving its origin unchanged.")
+        # # the simulated recon is reconstructed on the same CBCT geometry as the
+        # # RTK recon, so it is voxel-congruent with cbct_rtk but may still carry a
+        # # stale origin from the clinical frame (e.g. when the stage-3 rigid stamp
+        # # was skipped). Re-stamp it onto the RTK grid so it shares cbct_rtk's
+        # # origin before the common isocenter shift below.
+        # sim_path = self.cbct_simulated_path()
+        # if sim_path in images:
+        #     if images[sim_path].GetSize() == cbct_rtk.GetSize():
+        #         images[sim_path].CopyInformation(cbct_rtk)
+        #     else:
+        #         self.logger.warning("Simulated CBCT grid does not match the RTK grid; "
+        #                             "leaving its origin unchanged.")
 
-        ### change origin to be consistent with direct RTK recon ###
-        center = np.array(cbct_rtk.TransformContinuousIndexToPhysicalPoint(
-            [(s - 1) / 2.0 for s in cbct_rtk.GetSize()]))
-        if np.allclose(center, 0.0, atol=1e-3):
-            self.logger.info("cbct_rtk is already centered on the isocenter; "
-                             "skipping origin shift.")
-        else:
-            self.logger.info(f"Shifting origins by {np.round(-center, 2)} mm so the "
-                             "isocenter lands at (0,0,0).")
-            for image in images.values():
-                image.SetOrigin((np.array(image.GetOrigin()) - center).tolist())
+        # ### change origin to be consistent with direct RTK recon ###
+        # center = np.array(cbct_rtk.TransformContinuousIndexToPhysicalPoint(
+        #     [(s - 1) / 2.0 for s in cbct_rtk.GetSize()]))
+        # if np.allclose(center, 0.0, atol=1e-3):
+        #     self.logger.info("cbct_rtk is already centered on the isocenter; "
+        #                      "skipping origin shift.")
+        # else:
+        #     self.logger.info(f"Shifting origins by {np.round(-center, 2)} mm so the "
+        #                      "isocenter lands at (0,0,0).")
+        #     for image in images.values():
+        #         image.SetOrigin((np.array(image.GetOrigin()) - center).tolist())
 
-        ### write the files ###
-        for path, dtype in specs:
-            if path in images:
-                if dtype is None:
-                    sitk.WriteImage(images[path], path, useCompression=True)
-                else:
-                    io.save_image(images[path], path, dtype=dtype)
+        # ### write the files ###
+        # for path, dtype in specs:
+        #     if path in images:
+        #         if dtype is None:
+        #             sitk.WriteImage(images[path], path, useCompression=True)
+        #         else:
+        #             io.save_image(images[path], path, dtype=dtype)
         
         self.generate_final_overview()
         
