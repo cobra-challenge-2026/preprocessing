@@ -19,31 +19,30 @@ split_paths = {
 }
 
 config_paths = {
-    'A': 'configs/umcu_config_s2.yaml',
-    'B': 'configs/muw_config.yaml',
-    'C': 'configs/lyon_config_s2.yaml',
-    'D': 'configs/lmu_config_sets.yaml',
-    'F': 'configs/ukk_config.yaml',
-    'G': 'configs/mug_config.yaml'
+    'A': 'configs/config_A.yaml',
+    'B': 'configs/config_B.yaml',
+    'C': 'configs/config_C.yaml',
+    'D': 'configs/config_D.yaml',
+    'F': 'configs/config_F.yaml',
+    'G': 'configs/config_G.yaml'
 }
 
-SELECTED_CASE = ['G000']
+SELECTED_CASE = []
 SET = 'train'
 CENTER = 'G'
 PATIENT_SPLIT = split_paths[CENTER]
 CONFIG = config_paths[CENTER]
 
-
 ### OUTPUT CONFIGURATION ###
-output_dir = f"/data/RELEASE/{CENTER}"
+output_dir = f"/data/RELEASE/COBRA2026_Train/{CENTER}"
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 ## FILES TO INCLUDE IN THE RELEASE ###
 # input - output filename mapping
 files = {
-    # "cbct_rtk.mha": "cbct_rtk.mha",
-    # "cbct_simulated.mha": "cbct_simulated.mha",
+    "cbct_rtk.mha": "cbct_rtk.mha",
+    "cbct_simulated.mha": "cbct_simulated.mha",
     "cbct_clinical_rigid.mha": "cbct_clinical.mha",
     "fov_cbct.mha": "fov_cbct.mha",
     "fov_cbct_nocouch.mha": "fov_cbct_nocouch.mha",
@@ -63,14 +62,13 @@ files_extra = {
     r'overview_{}_final.png': r'overview_{}.png',
 }
 
-set = 'train'
-
 if __name__ == "__main__":
     patient_sets = load_patient_split(PATIENT_SPLIT)
     configs = load_patient_configs(CONFIG)
-    for case in patient_sets.keys():
+    keys = list(patient_sets.keys())
+    for case in keys:
         print(f"Processing case: {case}, set: {patient_sets[case]}")
-        if patient_sets[case] == set and (case in SELECTED_CASE or len(SELECTED_CASE) == 0):
+        if patient_sets[case] == SET and (case in SELECTED_CASE or len(SELECTED_CASE) == 0):
             config = configs[case]
             print(f"Processing patient {case}")
             if not os.path.exists(os.path.join(output_dir, case)):

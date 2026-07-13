@@ -185,7 +185,8 @@ def read_ini_files(reconstruction_dir: str, sections = ['RECONSTRUCTION', 'ALIGN
         'correctionapprovalstatus',
         'correctionapprovaltime',
         'datetime',
-        'reconstructionprotocolname'
+        'reconstructionprotocolname',
+        'scanuid'
     ]
     reconstruction_dict = {section: {} for section in sections}
 

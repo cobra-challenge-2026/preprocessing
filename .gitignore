@@ -23,3 +23,11 @@ configs/generate_muw_config.py
 configs/lmu_config_sets.yaml
 configs/umcu_config_sets.yaml
 .claude
+configs/config_A.yaml
+configs/config_B.yaml
+configs/config_C.yaml
+configs/config_D.yaml
+configs/config_E.yaml
+configs/config_F.yaml
+configs/config_G.yaml
+rerun_postprocess_varian.py

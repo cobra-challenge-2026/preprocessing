@@ -552,9 +552,6 @@ class PreProcessor:
                         moving = self.ct_rigid,
                         output_dir = self.config.data.output
                     )
-        # Deform the original full-FOV CT onto the CBCT grid in a single composed
-        # resample. Sampling the original CT (instead of the pre-cropped ct_rigid)
-        # avoids -1024 pull-in holes inside the CBCT FOV and removes one interpolation.
         self.ct_def_small = reg.apply_transforms_single(
                         ct = self.ct,
                         rigid_transform = self.rigid_transform,
@@ -711,9 +708,6 @@ class PreProcessor:
         self.logger.info("Loading data for stage 3...")
         self.ct_def = io.read_image(self.ct_def_path())
         self.cbct_clinical = io.read_image(self.cbct_clinical_path())
-        # the rigid clinical recon defines the projector isocenter (its grid center
-        # marks the acquisition isocenter); without it the projector infers the
-        # isocenter from the CT and the simulated geometry will not match the real scan
         if os.path.isfile(self.cbct_clinical_rigid_path()):
             self.cbct_clinical_rigid = io.read_image(self.cbct_clinical_rigid_path())
         else:
@@ -737,9 +731,6 @@ class PreProcessor:
         )
         simulator = pipeline._create_simulator()
 
-        # the library computes recon_origin as -n*s/2, displacing the simulated
-        # recon by half a voxel from the isocenter and breaking the origin
-        # permutation in its export step; -(n-1)*s/2 is the true centered origin
         system_config = simulator.build_system_config(
             geometry_xml=self.cbct_geometry_path(),
             metadata_yaml=self.metadata_path(),
@@ -751,7 +742,6 @@ class PreProcessor:
             ]
         )
 
-        # shared random-motion settings for both the rigid and inferred-iso paths
         motion_kwargs = dict(
             random_motion_type=MotionConfig.MotionType.PELVIS,
             random_motion_amplitude_range=(2.0, 7.0),    # motion displacement +/- mm
@@ -760,12 +750,6 @@ class PreProcessor:
         )
 
         if self.cbct_clinical_rigid is not None:
-            # Build the patient from the CT at native resolution and drive the
-            # simulator directly: the upstream package builds the patient
-            # internally (resampling the CT onto the reference grid) and has no
-            # patient= passthrough on generate_projections, so we construct it
-            # here with reference_cbct=None to keep the CT native. Work on a copy
-            # of the CT so re-origining below does not mutate self.ct_def.
             patient = Patient.from_images(
                 ct_image=sitk.Image(self.ct_def),
                 config=PatientConfig(
@@ -776,18 +760,12 @@ class PreProcessor:
                 reference_cbct=None,
                 patient_id="projection_pipeline",
             )
-            # position the CT for projection with an exact continuous shift: the
-            # library snaps the isocenter to whole voxels and lands it one voxel
-            # off (0,0,0); the grid center of the rigid clinical recon marks the
-            # acquisition isocenter
             iso_center = np.array(self.cbct_clinical_rigid.TransformContinuousIndexToPhysicalPoint(
                 [(s - 1) / 2.0 for s in self.cbct_clinical_rigid.GetSize()]))
             patient.shifted_origin = np.array(self.ct_def.GetOrigin()) - iso_center
             patient.ct_image.SetOrigin(patient.shifted_origin.tolist())
             patient.iso_center = np.zeros(3)
 
-            # run() generates the projections, reconstructs via FDK and writes
-            # both projections_simulated.mha and cbct_simulated.mha to output_dir
             result = simulator.run(
                 patient=patient,
                 system_config=system_config,
@@ -820,12 +798,7 @@ class PreProcessor:
                 "simcbctgenerator did not produce the expected stage 3 outputs: "
                 + ", ".join(missing_outputs)
             )
-
-        # the simulated recon is exported in the isocenter frame; it is
-        # reconstructed on the same CBCT geometry as the RTK recon, so it is
-        # voxel-congruent with cbct_rtk. Copy cbct_rtk's metadata to give the
-        # simulated CBCT the same origin as cbct_rtk (stage 4 then shifts both
-        # so the isocenter lands at (0,0,0)).
+            
         if os.path.isfile(self.cbct_rtk_path()):
             cbct_rtk = io.read_image(self.cbct_rtk_path())
             cbct_simulated = io.read_image(self.cbct_simulated_path())
@@ -994,69 +967,64 @@ class PreProcessor:
     def run_stage4(self):
         self.logger.info("Starting stage 4 postprocessing...")
         
-        # ### Remove couch ###
-        # cbct_rtk = io.read_image(self.cbct_rtk_path()) if os.path.isfile(self.cbct_rtk_path()) else None
-        # fov = io.read_image(self.fov_cbct_path()) if os.path.isfile(self.fov_cbct_path()) else None
-        # if cbct_rtk is None or fov is None:
-        #     self.logger.warning("CBCT or FOV mask not found. Skipping stage 4 postprocessing...")
-        #     return
-        # self.logger.info("Detecting couch on image...")
-        # result = img.generate_couch_masks_from_image(cbct_rtk, fov)
-        # fov_nocouch = img.remove_couch_from_fov(fov, result["behind_mask"])
-        # self.logger.info("Removed couch from FOV.")
-        # io.save_image(fov_nocouch, self.fov_cbct_nocouch_path(), dtype='uint16')
+        ### Remove couch ###
+        cbct_rtk = io.read_image(self.cbct_rtk_path()) if os.path.isfile(self.cbct_rtk_path()) else None
+        fov = io.read_image(self.fov_cbct_path()) if os.path.isfile(self.fov_cbct_path()) else None
+        if cbct_rtk is None or fov is None:
+            self.logger.warning("CBCT or FOV mask not found. Skipping stage 4 postprocessing...")
+            return
+        self.logger.info("Detecting couch on image...")
+        result = img.generate_couch_masks_from_image(cbct_rtk, fov)
+        fov_nocouch = img.remove_couch_from_fov(fov, result["behind_mask"])
+        self.logger.info("Removed couch from FOV.")
+        io.save_image(fov_nocouch, self.fov_cbct_nocouch_path(), dtype='uint16')
         
-        # ### Load images for re-origining ###
-        # specs = [
-        #     (self.ct_def_masked_path(), 'int16'),
-        #     (self.ct_def_path(), 'int16'),
-        #     (self.cbct_rtk_path(), 'int16'),
-        #     (self.cbct_simulated_path(), 'int16'),
-        #     (self.cbct_clinical_rigid_path(), 'int16'),
-        #     (self.fov_cbct_path(), 'uint16'),
-        #     (self.fov_cbct_nocouch_path(), 'uint16')
-        # ]
-        # images = {}
-        # for path, _ in specs:
-        #     if path == self.cbct_rtk_path():
-        #         images[path] = cbct_rtk
-        #     elif path == self.fov_cbct_nocouch_path():
-        #         images[path] = fov_nocouch
-        #     elif os.path.isfile(path):
-        #         images[path] = io.read_image(path)
+        ### Load images for re-origining ###
+        specs = [
+            (self.ct_def_masked_path(), 'int16'),
+            (self.ct_def_path(), 'int16'),
+            (self.cbct_rtk_path(), 'int16'),
+            (self.cbct_simulated_path(), 'int16'),
+            (self.cbct_clinical_rigid_path(), 'int16'),
+            (self.fov_cbct_path(), 'uint16'),
+            (self.fov_cbct_nocouch_path(), 'uint16')
+        ]
+        images = {}
+        for path, _ in specs:
+            if path == self.cbct_rtk_path():
+                images[path] = cbct_rtk
+            elif path == self.fov_cbct_nocouch_path():
+                images[path] = fov_nocouch
+            elif os.path.isfile(path):
+                images[path] = io.read_image(path)
 
-        # # the simulated recon is reconstructed on the same CBCT geometry as the
-        # # RTK recon, so it is voxel-congruent with cbct_rtk but may still carry a
-        # # stale origin from the clinical frame (e.g. when the stage-3 rigid stamp
-        # # was skipped). Re-stamp it onto the RTK grid so it shares cbct_rtk's
-        # # origin before the common isocenter shift below.
-        # sim_path = self.cbct_simulated_path()
-        # if sim_path in images:
-        #     if images[sim_path].GetSize() == cbct_rtk.GetSize():
-        #         images[sim_path].CopyInformation(cbct_rtk)
-        #     else:
-        #         self.logger.warning("Simulated CBCT grid does not match the RTK grid; "
-        #                             "leaving its origin unchanged.")
+        sim_path = self.cbct_simulated_path()
+        if sim_path in images:
+            if images[sim_path].GetSize() == cbct_rtk.GetSize():
+                images[sim_path].CopyInformation(cbct_rtk)
+            else:
+                self.logger.warning("Simulated CBCT grid does not match the RTK grid; "
+                                    "leaving its origin unchanged.")
 
-        # ### change origin to be consistent with direct RTK recon ###
-        # center = np.array(cbct_rtk.TransformContinuousIndexToPhysicalPoint(
-        #     [(s - 1) / 2.0 for s in cbct_rtk.GetSize()]))
-        # if np.allclose(center, 0.0, atol=1e-3):
-        #     self.logger.info("cbct_rtk is already centered on the isocenter; "
-        #                      "skipping origin shift.")
-        # else:
-        #     self.logger.info(f"Shifting origins by {np.round(-center, 2)} mm so the "
-        #                      "isocenter lands at (0,0,0).")
-        #     for image in images.values():
-        #         image.SetOrigin((np.array(image.GetOrigin()) - center).tolist())
+        ### change origin to be consistent with direct RTK recon ###
+        center = np.array(cbct_rtk.TransformContinuousIndexToPhysicalPoint(
+            [(s - 1) / 2.0 for s in cbct_rtk.GetSize()]))
+        if np.allclose(center, 0.0, atol=1e-3):
+            self.logger.info("cbct_rtk is already centered on the isocenter; "
+                             "skipping origin shift.")
+        else:
+            self.logger.info(f"Shifting origins by {np.round(-center, 2)} mm so the "
+                             "isocenter lands at (0,0,0).")
+            for image in images.values():
+                image.SetOrigin((np.array(image.GetOrigin()) - center).tolist())
 
-        # ### write the files ###
-        # for path, dtype in specs:
-        #     if path in images:
-        #         if dtype is None:
-        #             sitk.WriteImage(images[path], path, useCompression=True)
-        #         else:
-        #             io.save_image(images[path], path, dtype=dtype)
+        ### write the files ###
+        for path, dtype in specs:
+            if path in images:
+                if dtype is None:
+                    sitk.WriteImage(images[path], path, useCompression=True)
+                else:
+                    io.save_image(images[path], path, dtype=dtype)
         
         self.generate_final_overview()
         
