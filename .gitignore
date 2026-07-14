@@ -31,3 +31,4 @@ configs/config_E.yaml
 configs/config_F.yaml
 configs/config_G.yaml
 rerun_postprocess_varian.py
+test_paper_figures.py
