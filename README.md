@@ -1,5 +1,5 @@
 # COBRA2026 Preprocessing Pipeline
-
+[![DOI](https://zenodo.org/badge/1094217061.svg)](https://doi.org/10.5281/zenodo.21397774)
 This preprocessing pipeline prepares CBCT projections and corresponding CT images for the COBRA2026 reconstruction dataset/challenge.
 
 Currently preprocessing for Elekta and Varian CBCT systems is supported.
