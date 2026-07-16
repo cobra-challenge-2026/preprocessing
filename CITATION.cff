@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "COBRA2026 Preprocessing Pipeline"
+type: software
+license: Apache-2.0
+repository-code: "https://github.com/cobra-challenge-2026/preprocessing"
+url: "https://github.com/cobra-challenge-2026/preprocessing"
+abstract: >-
+  Preprocessing pipeline for preparing cone-beam CT projections,
+  reconstructed CBCT images, planning CT images, acquisition geometry,
+  metadata, deformable registrations, and simulated projections for the
+  COBRA2026 reconstruction dataset and challenge.
+authors:
+  - family-names: "Thummerer"
+    given-names: "Adrian"
+  - family-names: "Zimmermann"
+    given-names: "Lukas"
+  - name: "COBRA2026 contributors"
+keywords:
+  - cone-beam computed tomography
+  - CBCT
+  - radiotherapy
+  - image reconstruction
+  - preprocessing
+  - medical imaging
+preferred-citation:
+  type: software
+  title: "COBRA2026 Preprocessing Pipeline"
+  authors:
+    - family-names: "Thummerer"
+      given-names: "Adrian"
+    - family-names: "Zimmermann"
+      given-names: "Lukas"
+    - name: "COBRA2026 contributors"
+  year: 2026
+  repository-code: "https://github.com/cobra-challenge-2026/preprocessing"
+  license: Apache-2.0
